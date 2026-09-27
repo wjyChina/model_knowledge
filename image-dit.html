@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>DiT MMDiT 结构详解 | 生成模型工程手册</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="detail.css" />
+  </head>
+  <body>
+    <div class="detail-top">
+      <a href="image-models.html">← 图像模型总览</a
+      ><span>SD3 / DiT / MMDiT 结构详解</span
+      ><a href="image-flux-qwen.html">FLUX/Qwen-Image →</a>
+    </div>
+    <main class="detail-reader">
+      <div class="eyebrow">模型详解 B / Diffusion Transformer</div>
+      <h1>SD3 / DiT / MMDiT：从 latent patch 到联合注意力</h1>
+      <p class="lead">
+        DiT 把 latent 网格变成 token 序列，用 Transformer block 预测噪声、速度或
+        flow。SD3 类 MMDiT 的关键不是“把 U-Net 换成
+        Transformer”这么简单，而是文本流和图像流有各自的表示投影，再通过联合
+        attention 交互。
+      </p>
+      <div class="detail-terms">
+        <b>DiT = Diffusion Transformer</b
+        ><b>MMDiT = Multimodal Diffusion Transformer</b
+        ><b>Patchify = 把 latent 网格切成 token</b
+        ><b>Unpatchify = 将 token 还原为 latent 网格</b
+        ><b>Flow Matching = 学习概率路径速度场</b
+        ><b>AdaLN = Adaptive Layer Normalization</b
+        ><b>joint attention = 文本/图像 token 联合注意力</b>
+      </div>
+      <div data-architecture="dit"></div>
+      <div class="arch-diagram">
+        <div class="arch-title">DiT / MMDiT 的输入输出：拼接发生在 attention 内部，不是入口处相加</div>
+        <div class="flow wide">
+          <div class="node">RGB / prompt</div>
+          <b class="arrow">→</b>
+          <div class="node alt">VAE latent<br />[B,16,H/8,W/8]</div>
+          <b class="arrow">→</b>
+          <div class="node">PatchEmbed(p=2) + pos_embed<br />[B,N_img,D]</div>
+          <b class="arrow">→</b>
+          <div class="node">
+            每个 block：图像 to_q/to_k/to_v<br />文本 add_q/add_k/add_v
+          </div>
+          <b class="arrow">→ concat(seq, dim=2)</b>
+          <div class="node alt">
+            Q/K/V [B,heads,N_img+N_txt,64]<br />一次联合 attention
+          </div>
+          <b class="arrow">→ split(seq)</b>
+          <div class="node output">
+            只取图像 token → proj_out<br />latent velocity [B,16,H/8,W/8]
+          </div>
+        </div>
+        <figcaption>
+          图 I-B1 · N_img = (H/8/p) × (W/8/p)；D 是模型宽度。图像 token 与文本
+          token <b>序列长度不同、宽度相同</b>，所以只能在 attention 的 Q/K/V 上沿
+          <b>序列维 concat</b>，attention 输出再按 <code>residual.shape[1]</code>
+          切回两条流；只有在形状完全相同时（AdaLN 残差、attention 输出残差、FFN
+          残差）才做 <b>residual add</b>。改变 H/W 改变 image token
+          数量，显存与训练分布共同限制可用范围。
+        </figcaption>
+      </div>
+      <section class="detail-section">
+        <h2>1. Patchify / Unpatchify</h2>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>模块</th>
+              <th>输入</th>
+              <th>内部形式</th>
+              <th>输出</th>
+            </tr>
+            <tr>
+              <td>Patchify</td>
+              <td>latent z [B,C,H′,W′]</td>
+              <td>按 p×p 切块；每块展平 C·p²，再 Linear 投影</td>
+              <td>image tokens [B,Nimg,D]</td>
+            </tr>
+            <tr>
+              <td>position</td>
+              <td>token index / 2D coords</td>
+              <td>RoPE 或其他空间位置变换</td>
+              <td>带位置的 token</td>
+            </tr>
+            <tr>
+              <td>Unpatchify</td>
+              <td>pred tokens [B,Nimg,C·p²]</td>
+              <td>还原二维网格并 reshape</td>
+              <td>pred latent [B,C,H′,W′]</td>
+            </tr>
+          </table>
+        </div>
+        <p>
+          例如 latent 128×128、patch 2 时 Nimg=4096；latent 256×256 时
+          Nimg=16384。空间面积翻倍不是 token 翻倍，而是约四倍；全局 attention 的
+          pair 数还会平方增长。
+        </p>
+      </section>
+      <section class="detail-section">
+        <h2>2. Transformer block 内部</h2>
+        <div class="arch-diagram">
+          <div class="arch-title">
+            一个 MMDiT block 内部（SD3.5-large：D=2432、38 层、qk_norm=rms_norm、GELU FFN）
+          </div>
+          <div class="flow stack">
+            <div class="node input">
+              image tokens [B,4096,2432] ＋ text tokens [B,N_txt,2432]（两条流，形状不同）
+            </div>
+            <b class="arrow">↓</b>
+            <div class="node">
+              AdaLN-Zero 调制：由 timestep embedding 与 pooled [B,2048]
+              相加后生成 scale / shift / gate（逐元素相加，形状必须相同）
+            </div>
+            <b class="arrow">↓</b>
+            <div class="node alt">
+              图像：to_q/to_k/to_v → [B,24,4096,64]<br />文本：add_q_proj/add_k_proj/add_v_proj
+              → [B,24,N_txt,64]（RMSNorm 作用于 Q/K）
+            </div>
+            <b class="arrow">↓</b>
+            <div class="node">
+              concat(dim=2, 序列维) → [B,24,4096+N_txt,64]<br />softmax(QKᵀ/√64)·V
+            </div>
+            <b class="arrow">↓</b>
+            <div class="node">
+              split(seq)：图像段 / 文本段<br />各自 out projection → residual add
+            </div>
+            <b class="arrow">↓</b>
+            <div class="node alt">
+              各自 Norm2 → FFN（2432→9728→2432，GELU）→ residual add
+            </div>
+            <b class="arrow">↓</b>
+            <div class="node output">
+              更新后的 image / text token（形状不变），送入下一个 block
+            </div>
+          </div>
+          <figcaption>
+            图 I-B2 · 图中只有三处 “+”，全部是<b>逐元素相加（residual add）</b>，要求形状完全相同：
+            AdaLN 残差、attention 输出投影后的残差、FFN 后的残差。跨模态的信息交换发生在
+            <b>concat(seq) 之后的联合 attention</b>，不是靠相加实现的。时间/sigma 条件通过
+            AdaLN 调制 norm；pooled 文本条件也走这条调制路径，而不是进 K/V。
+          </figcaption>
+        </div>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>模块</th>
+              <th>输入</th>
+              <th>输出</th>
+              <th>作用</th>
+            </tr>
+            <tr>
+              <td>QKV Linear</td>
+              <td>tokens [B,N,D]</td>
+              <td>Q/K/V [B,heads,N,d]</td>
+              <td>将表示投影到 attention 子空间</td>
+            </tr>
+            <tr>
+              <td>RoPE</td>
+              <td>Q/K + 位置坐标</td>
+              <td>旋转后的 Q/K</td>
+              <td>注入二维图像/文本位置关系</td>
+            </tr>
+            <tr>
+              <td>Attention</td>
+              <td>Q/K/V</td>
+              <td>context [B,N,D]</td>
+              <td>图像内部或文本-图像 token 交互</td>
+            </tr>
+            <tr>
+              <td>MLP/SwiGLU</td>
+              <td>token [B,N,D]</td>
+              <td>token [B,N,D]</td>
+              <td>逐 token 非线性变换，不直接混合位置</td>
+            </tr>
+            <tr>
+              <td>output head</td>
+              <td>final image tokens</td>
+              <td>每 token 的 latent patch</td>
+              <td>预测 epsilon/v/velocity</td>
+            </tr>
+          </table>
+        </div>
+      </section>
+      <section class="detail-section">
+        <h2>3. SD3 MMDiT 的双流与联合 attention</h2>
+        <p>
+          双流结构给图像 token 和文本 token 不同的 Linear、Norm 和参数空间：
+          图像侧用 <code>to_q/to_k/to_v</code> 与 <code>to_out.0</code>，文本侧用
+          <code>add_q_proj/add_k_proj/add_v_proj</code> 与
+          <code>to_add_out</code>。在 SD3 / Diffusers 的实现里，两流<b>先各自投影到
+          同一个 head 维度</b>，然后
+          <code>torch.cat([q_img, q_txt], dim=2)</code>（<b>序列维</b>，即
+          <code>[B,heads,N_img,64]</code> 与 <code>[B,heads,N_txt,64]</code> 拼成
+          <code>[B,heads,N_img+N_txt,64]</code>，K/V 同理），做一次
+          <code>softmax(QKᵀ/√d)V</code>，再把结果按
+          <code>hidden_states[:, :residual.shape[1]]</code> 与
+          <code>hidden_states[:, residual.shape[1]:]</code> <b>拆回</b>图像段和文本段，
+          各自经过 out projection 与 residual add，然后各走自己的 FFN。
+          这样做的目的是让多模态交互更灵活，而不是把 text embedding
+          直接复制到每个图像 token，也不是在通道维拼接条件。
+        </p>
+        <div class="parallel-diagram">
+          <div class="p-row">
+            <div class="p-box">
+              Image stream<br />x [B,N_img,D]<br />to_q/to_k/to_v<br />Q_i/K_i/V_i
+              [B,h,N_img,64]
+            </div>
+            <div class="p-op">
+              concat(dim=2, 序列维)<br />[B,h,N_img+N_txt,64]<br />↓<br />softmax(QKᵀ/√64)·V<br />↓<br />split(seq)
+            </div>
+            <div class="p-box">
+              Text stream<br />c [B,N_txt,D]<br />add_q/k/v_proj<br />Q_t/K_t/V_t
+              [B,h,N_txt,64]
+            </div>
+          </div>
+          <div class="p-result">
+            拆流后各自 to_out / to_add_out → residual add（逐元素）→ 各自 FFN →
+            residual add；最后一个 block 之后<b>只取 image stream</b> 的 token 预测
+            latent 更新量
+          </div>
+        </div>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>阶段</th>
+              <th>输入</th>
+              <th>输出</th>
+            </tr>
+            <tr>
+              <td>双流准备</td>
+              <td>image [B,Nimg,Di]、text [B,Ntxt,Dt]</td>
+              <td>各自投影到 block 需要的表示</td>
+            </tr>
+            <tr>
+              <td>联合 attention</td>
+              <td>两流 Q/K/V</td>
+              <td>交互后的两流 token</td>
+            </tr>
+            <tr>
+              <td>MLP</td>
+              <td>各流 token</td>
+              <td>保留各自流宽度/投影空间</td>
+            </tr>
+            <tr>
+              <td>输出</td>
+              <td>image stream final</td>
+              <td>latent patch prediction</td>
+            </tr>
+          </table>
+        </div>
+      </section>
+      <section class="detail-section">
+        <h2>4. 文本编码器和多路条件</h2>
+        <p>
+          不同 checkpoint 会组合 CLIP、T5 等文本编码器，输出 per-token hidden 与
+          pooled embedding。pipeline 可能把 pooled embedding
+          作为全局条件，把序列 hidden 送入 joint attention；还可能加入图像
+          embedding、尺寸/裁剪信息或编辑参考。必须从具体 pipeline 的
+          <code>encode_prompt</code> 和 transformer forward
+          参数确认，而不能只看模型名称。
+        </p>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>条件</th>
+              <th>典型输入</th>
+              <th>典型输出</th>
+              <th>注入位置</th>
+            </tr>
+            <tr>
+              <td>文本序列</td>
+              <td>input_ids [B,Ntxt]</td>
+              <td>text hidden [B,Ntxt,Dt]</td>
+              <td>joint/cross attention K/V</td>
+            </tr>
+            <tr>
+              <td>pooled text</td>
+              <td>text hidden</td>
+              <td>[B,Dt]</td>
+              <td>time/AdaLN/global projection</td>
+            </tr>
+            <tr>
+              <td>参考图</td>
+              <td>RGB 或 image embedding</td>
+              <td>image tokens [B,Nref,D]</td>
+              <td>joint attention/adapter</td>
+            </tr>
+            <tr>
+              <td>timestep/sigma</td>
+              <td>scalar [B]</td>
+              <td>condition [B,D]</td>
+              <td>AdaLN、gate 或 block modulation</td>
+            </tr>
+          </table>
+        </div>
+      </section>
+      <section class="detail-section">
+        <h2>5. Flow Matching 训练和推理</h2>
+        <p>
+          取数据 latent <code>z_data</code>（也就是 VAE 编码后的干净 latent）和噪声
+          <code>eps ~ N(0,I)</code>，在时间 <code>t ∈ [0,1]</code> 上定义直线路径
+          <code>z_t = (1 - t) · z_data + t · eps</code>，该路径的真实速度是
+          <code>u = dz_t/dt = eps - z_data</code>（<b>噪声减数据</b>；写成
+          “z1 − z0”时容易把谁是噪声弄反，必须按具体实现核对）。Transformer 输入
+          <code>z_t</code>、<code>t</code> 与条件 <code>c</code>，输出
+          <code>vθ(z_t,t,c)</code>；训练最小化
+          <code>||vθ(z_t,t,c) - (eps - z_data)||²</code>。推理从噪声出发，用
+          Euler/Heun 等 ODE solver 按 sigma 序列逐步积分。solver 的 step
+          数影响速度与质量，但它不是 Transformer 的层，也没有可学习参数。
+        </p>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>阶段</th>
+              <th>输入</th>
+              <th>输出</th>
+            </tr>
+            <tr>
+              <td>训练路径</td>
+              <td>z0、z1、t</td>
+              <td>zt、target velocity u</td>
+            </tr>
+            <tr>
+              <td>DiT forward</td>
+              <td>zt、t/sigma、text/image condition</td>
+              <td>vθ 与 zt 同形状</td>
+            </tr>
+            <tr>
+              <td>solver step</td>
+              <td>zt、vθ、dt</td>
+              <td>zt+dt·vθ</td>
+            </tr>
+          </table>
+        </div>
+      </section>
+      <section class="detail-section" id="finetune">
+        <h2>6. DiT LoRA 位置和最小示例</h2>
+        <p>
+          常见目标包括 attention 的
+          <code>to_q/to_k/to_v/to_out</code>、双流/联合 attention 的投影，以及
+          MLP 的 <code>fc1/fc2</code> 或
+          <code>proj_in/proj_out</code>。具体名称要打印模块树。VAE
+          通常冻结，text encoder 是否训练由官方脚本决定。
+        </p>
+        <h3>DiT / MMDiT 的数据和训练选择</h3>
+        <p>
+          T2I 数据是一行一个图像路径和
+          caption；编辑任务必须保留源图、目标图、指令和
+          mask；文字渲染任务要单独收集不同字体、语言、字号和长短文本。按主体、艺术家或来源分组切分，训练前检查
+          caption 是否描述画面而不是复制文件名，并固定 VAE、text encoder、latent
+          scaling 和尺寸桶。
+        </p>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>任务</th>
+              <th>数据字段</th>
+              <th>推荐训练</th>
+              <th>主要验收</th>
+            </tr>
+            <tr>
+              <td>风格/主体 LoRA</td>
+              <td>image、caption、subject/style、size、license</td>
+              <td>
+                冻结 VAE/文本编码器，训练 image stream 与 joint attention LoRA
+              </td>
+              <td>主体、风格、构图和 prompt 遵循</td>
+            </tr>
+            <tr>
+              <td>文字/布局</td>
+              <td>image、精确文字转写、区域/布局标注</td>
+              <td>扩大 attention 与 MLP target；必要时全量或 adapter 微调</td>
+              <td>字符准确率、位置、字号和不同语言泛化</td>
+            </tr>
+            <tr>
+              <td>编辑/参考图</td>
+              <td>source、target、instruction、reference、mask</td>
+              <td>条件投影或 image stream adapter；不要把源图误当 caption</td>
+              <td>保留区域、修改区域和边界融合</td>
+            </tr>
+          </table>
+        </div>
+        <div class="code-block">
+          <span class="code-label">JSONL · DiT 训练样本</span>
+          <pre><code>{"image":"train/poster_001.png","caption":"technical poster, Chinese title: 注意力机制, blue grid","text_regions":[{"text":"注意力机制","box":[80,60,720,150]}],"split":"train"}
+{"source":"edit/a.png","target":"edit/b.png","instruction":"把背景改成夜景，保留人物姿势","split":"validation"}</code></pre>
+        </div>
+        <p>
+          Flow Matching/rectified-flow 模型通常从图像 latent
+          <code>z1</code> 与噪声 <code>z0</code> 采样时间 <code>t</code>，构造
+          <code>zt</code> 和速度 target，再以 MSE 更新 transformer；推理时
+          solver 步数不是训练 epoch。先用 image-only LoRA
+          跑通，再决定是否训练文本条件投影；每次实验保存 patch/packing、sigma
+          schedule、solver、rank/alpha 和固定 seed，比较未见宽高比与长文本。
+        </p>
+        <div class="code-block">
+          <span class="code-label">Python · 找 Transformer 投影层</span>
+          <pre><code>for name, module in pipe.transformer.named_modules():
+    if isinstance(module, torch.nn.Linear):
+        if any(key in name for key in ("q", "k", "v", "proj", "fc")):
+            print(name, module.in_features, module.out_features)</code></pre>
+        </div>
+        <div class="code-block">
+          <span class="code-label"
+            >Python · Diffusers FLUX/DiT 风格调用骨架</span
+          >
+          <pre><code>from diffusers import FluxPipeline
+import torch
+pipe = FluxPipeline.from_pretrained(
+    "black-forest-labs/FLUX.1-schnell",
+    torch_dtype=torch.bfloat16
+).to("cuda")
+image = pipe("a clean technical diagram of image tokens", 
+             height=768, width=1024, num_inference_steps=4,
+             generator=torch.Generator("cuda").manual_seed(3)).images[0]</code></pre>
+        </div>
+      </section>
+      <p>
+        以上调用只表达 pipeline
+        形态；具体模型的许可、组件下载和显存要求以官方仓库为准。
+      </p>
+      <p>
+        论文与官方实现：<a
+          href="https://arxiv.org/abs/2212.09748"
+          target="_blank"
+          rel="noopener"
+          >DiT</a
+        >
+        ·
+        <a
+          href="https://arxiv.org/abs/2403.03206"
+          target="_blank"
+          rel="noopener"
+          >Rectified Flow Transformers</a
+        >
+        ·
+        <a
+          href="https://huggingface.co/docs/diffusers/main/en/api/models/transformer2d"
+          target="_blank"
+          rel="noopener"
+          >Diffusers Transformer2D</a
+        >
+        ·
+        <a
+          href="https://huggingface.co/stabilityai/stable-diffusion-3.5-large"
+          target="_blank"
+          rel="noopener"
+          >SD3.5-large 模型卡与 config</a
+        >
+        ·
+        <a
+          href="https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/attention_processor.py"
+          target="_blank"
+          rel="noopener"
+          >Diffusers JointAttnProcessor2_0（拼接与拆流的确切位置）</a
+        >
+      </p>
+      <p>
+        版本边界：SD3-medium / SD3.5-large 的层数、宽度与文本编码器组合不同（例如
+        SD3.5-large 为 38 层、caption_projection_dim=2432、joint_attention_dim=4096、
+        pooled_projection_dim=2048），必须读各自 checkpoint 的
+        <code>transformer/config.json</code>；论文只公开设计与规模，不构成某个
+        checkpoint 的层数事实。
+      </p>
+    </main>
+    <script src="detail.js"></script>
+  </body>
+</html>

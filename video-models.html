@@ -1,0 +1,976 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>视频模型与功能详解 | 生成模型工程手册</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="detail.css" />
+    <script defer src="detail.js"></script>
+  </head>
+  <body>
+    <div class="detail-top">
+      <a href="index.html#video-models">← 返回主页视频章节</a
+      ><span>视频模型与工作流详解</span
+      ><a href="image-models.html">图像公共模块 →</a>
+    </div>
+    <main class="detail-reader">
+      <div class="eyebrow">视频模型详解 / 功能领域与主干</div>
+      <h1>视频生成：先按任务，再按模型和显存</h1>
+      <p class="lead">
+        视频模型共享“文本/图像条件 → 时空 latent → 视频主干 → 时空 VAE
+        解码”的大框架，但时间压缩、3D patch、空间/时间
+        attention、文本编码器、MoE
+        专家和长视频记忆策略不同。本页先讲公共结构，再按
+        T2V、I2V、编辑、长视频、音频/数字人分区，并给出代表模型的结构边界。
+      </p>
+      <div class="detail-terms">
+        <b>T2V = Text-to-Video</b><b>I2V = Image-to-Video</b
+        ><b>TI2V = Text-and-Image-to-Video</b><b>V2V = Video-to-Video</b
+        ><b>3D VAE = 时空变分自编码器</b><b>tubelet = 时间块 + 空间 patch</b
+        ><b>temporal attention = 跨帧注意力</b><b>motion prior = 运动先验</b
+        ><b>FPS = Frames Per Second</b><b>LoRA = Low-Rank Adaptation</b
+        ><b>H3 = MiniMax H3</b><b>Omni-modal = 统一多模态条件</b>
+      </div>
+      <nav class="detail-nav" aria-label="本页目录">
+        <a href="#common">公共架构</a><a href="#t2v">T2V</a
+        ><a href="#i2v">I2V</a><a href="#edit">V2V / 编辑</a
+        ><a href="#long-video">长视频</a><a href="#audio-avatar">音频/数字人</a
+        ><a href="#families">按家族分开看</a><a href="#models">模型逐个看</a><a href="#h3">H3 独有页</a
+        ><a href="#finetune">视频微调</a>
+      </nav>
+      <section class="detail-section" id="common">
+        <h2>1. 视频模型公共架构（概念接口，不是任一具体模型的图）</h2>
+        <div class="arch-diagram">
+          <div class="arch-title">
+            概念接口图：不是任一具体模型的完整架构（变量与形状只在适用范围内成立）
+          </div>
+          <div class="flow wide">
+            <div class="node">文本条件</div>
+            <b class="arrow">→</b>
+            <div class="node alt">
+              文本编码器<br />（UMT5 / LLaVA+CLIP / T5 … 各家不同）
+            </div>
+            <b class="arrow">→</b>
+            <div class="node">条件序列 token</div>
+          </div>
+          <div class="flow wide" style="margin-top:14px">
+            <div class="node">
+              视频 / 参考图<br />[B,3,T,H,W]
+            </div>
+            <b class="arrow">→</b>
+            <div class="node alt">
+              视频 VAE Encode<br />（时间压缩 4× 或 8×；通道 16 / 128 / 24 …）
+            </div>
+            <b class="arrow">→</b>
+            <div class="node">
+              时空 latent<br />[B,C,T′,H′,W′]
+            </div>
+            <b class="arrow">→ patchify / tubelet</b>
+            <div class="node">
+              video tokens<br />[B,N,D]，N∝T′·H′·W′
+            </div>
+            <b class="arrow">→</b>
+            <div class="node">
+              时空主干（DiT / U-Net + motion module）<br />空间与时间 attention 的实现各不相同
+            </div>
+            <b class="arrow">→ update（epsilon / v / velocity，按模型）</b>
+            <div class="node">
+              scheduler / flow solver 多步
+            </div>
+            <b class="arrow">→ 解码</b>
+            <div class="node output">
+              帧序列 [B,3,T,H,W]<br />（可能再插帧 / 超分）
+            </div>
+          </div>
+          <figcaption>
+            图 VID-01 · <b>这是一张“概念接口”图，不是任一 checkpoint 的架构图</b>：它只说明“条件编码 →
+            时空 latent → token 化 → 主干多步预测 → 解码”这条公共职责链。真实模型在这些位置完全不同：时间压缩率、
+            latent 通道数、是否使用 tubelet、空间与时间 attention 是分开还是联合、文本编码器、
+            是否用 MoE 专家、是否原生生成音频，各家都不一样。token 数约随
+            T′×H′×W′ 增长，因此分辨率、帧数与显存相互牵制——这一点是公共的，但具体倍数必须按模型核验。
+          </figcaption>
+        </div>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>模块</th>
+              <th>输入</th>
+              <th>输出</th>
+              <th>作用</th>
+            </tr>
+            <tr>
+              <td>Video VAE encode</td>
+              <td>视频 [B,3,T,H,W]</td>
+              <td>latent [B,C,T',H',W']</td>
+              <td>同时压缩时间和空间</td>
+            </tr>
+            <tr>
+              <td>Tubelet/3D patch</td>
+              <td>latent 网格</td>
+              <td>tokens [B,N,D]</td>
+              <td>把时空局部块映射到 Transformer</td>
+            </tr>
+            <tr>
+              <td>Spatial attention</td>
+              <td>同帧 tokens</td>
+              <td>同形状 context</td>
+              <td>布局、物体和局部空间关系</td>
+            </tr>
+            <tr>
+              <td>Temporal attention</td>
+              <td>跨帧 tokens</td>
+              <td>同形状 context</td>
+              <td>运动、身份和纹理连续性</td>
+            </tr>
+            <tr>
+              <td>MLP/FFN</td>
+              <td>token hidden</td>
+              <td>token hidden</td>
+              <td>attention 后逐 token 通道变换</td>
+            </tr>
+            <tr>
+              <td>3D VAE decode</td>
+              <td>clean video latent</td>
+              <td>RGB frames</td>
+              <td>还原帧序列，可能再插帧/超分</td>
+            </tr>
+          </table>
+        </div>
+        <p>
+          这张公共表只描述职责，不描述某个模型的具体张量：不同家族的真实通道数、时间压缩率与
+          attention 组织方式差别很大，已在下文 7.1—7.6 按家族分开列出。视频 Transformer 中的 MLP
+          与图像 DiT 的位置类似：通常在 attention residual 之后接收 [B,N,D]，升维、激活/门控、降维，再残差回
+          block。它不负责直接“产生运动”；运动来自跨帧 attention、时间位置、训练数据与条件共同作用。
+        </p>
+      </section>
+      <section class="detail-section" id="t2v">
+        <h2>2. 文本生视频 T2V：没有源画面时怎样建立动作</h2>
+        <p>
+          T2V 输入是 prompt、尺寸、帧数、FPS、seed 和采样参数。文本 encoder
+          输出序列条件，视频主干从随机时空 latent 开始；每个 denoise/flow step
+          同时更新多个帧的 latent。动作合理性取决于训练视频中的运动分布、时间
+          attention 和文本条件，而不是把图像生成重复 T 次。
+        </p>
+        <div class="detail-cards">
+          <a href="#wan"
+            ><strong>Wan 2.2</strong
+            ><span
+              >开放权重/代码，覆盖
+              T2V、I2V、TI2V；部分版本使用高低噪声专家。</span
+            ></a
+          ><a href="#hunyuan"
+            ><strong>HunyuanVideo / 1.5</strong
+            ><span
+              >潜视频 Transformer 路线，按版本提供 T2V/I2V
+              和不同资源配置。</span
+            ></a
+          ><a href="#cogvideo"
+            ><strong>CogVideoX</strong
+            ><span
+              >3D VAE + video Transformer，T2V/I2V 生态和训练代码较完整。</span
+            ></a
+          ><a href="#ltx"
+            ><strong>LTX-Video / LTX-2</strong
+            ><span>时空压缩 Transformer 路线，后续版本扩展音视频能力。</span></a
+          ><a href="video-h3.html"
+            ><strong>MiniMax H3</strong
+            ><span
+              >统一文本、图像、视频、音频上下文；H3-Omni-Transformer
+              联合预测视频与音频 latent。<br /><em>进入独有结构详解 →</em></span
+            ></a
+          >
+        </div>
+      </section>
+      <section class="detail-section" id="i2v">
+        <h2>3. 图生视频 I2V / TI2V：怎样把静态外观变成时间轨迹</h2>
+        <div class="arch-diagram">
+          <div class="flow">
+            <div class="node">source image<br />[B,3,H,W]</div>
+            <b class="arrow">→</b>
+            <div class="node alt">VAE/image encoder<br />外观条件</div>
+            <b class="arrow">+</b>
+            <div class="node">text + motion prompt</div>
+            <b class="arrow">→</b>
+            <div class="node">
+              video latent + condition<br />空间/时间 attention
+            </div>
+            <b class="arrow">→</b>
+            <div class="node output">video frames</div>
+          </div>
+          <figcaption>
+            图 VID-02：I2V
+            把源图约束为外观/首帧/参考条件，运动轨迹仍由视频主干和文本条件预测。
+          </figcaption>
+        </div>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>输入</th>
+              <th>典型处理</th>
+              <th>输出</th>
+              <th>常见失败</th>
+            </tr>
+            <tr>
+              <td>首帧图</td>
+              <td>复制/编码到首段条件</td>
+              <td>首帧外观较稳定</td>
+              <td>后续身份、服饰、背景漂移</td>
+            </tr>
+            <tr>
+              <td>参考图</td>
+              <td>image embedding 或 latent condition</td>
+              <td>风格/主体参考</td>
+              <td>参考图语义与动作冲突</td>
+            </tr>
+            <tr>
+              <td>首尾帧</td>
+              <td>两个边界条件</td>
+              <td>中间轨迹</td>
+              <td>中间运动不符合物理</td>
+            </tr>
+            <tr>
+              <td>文本动作</td>
+              <td>文本 encoder + cross/joint attention</td>
+              <td>运动语义</td>
+              <td>动作词被理解成静态画面</td>
+            </tr>
+          </table>
+        </div>
+      </section>
+      <section class="detail-section" id="edit">
+        <h2>4. V2V、重绘和局部视频编辑</h2>
+        <p>
+          V2V 通常先把源视频编码到时空 latent，再按
+          strength/噪声起点重采样；编辑指令、mask、参考图或结构控制作为额外条件。mask
+          必须与时间和空间 latent 对齐，逐帧独立 mask
+          不能保证边界连续。视频编辑的质量门控至少包括身份、运动、边界接缝、闪烁、字幕和音画同步。
+        </p>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>模块</th>
+              <th>输入</th>
+              <th>输出</th>
+              <th>工程要点</th>
+            </tr>
+            <tr>
+              <td>video processor</td>
+              <td>帧序列、FPS、裁剪</td>
+              <td>规整的视频 tensor</td>
+              <td>固定帧率、尺寸、色彩和帧顺序</td>
+            </tr>
+            <tr>
+              <td>3D VAE encode</td>
+              <td>[B,3,T,H,W]</td>
+              <td>[B,C,T',H',W']</td>
+              <td>时间 padding/压缩会影响首尾</td>
+            </tr>
+            <tr>
+              <td>mask/control encoder</td>
+              <td>mask、深度、姿态、边缘</td>
+              <td>latent/token condition</td>
+              <td>空间和时间对齐</td>
+            </tr>
+            <tr>
+              <td>video transformer</td>
+              <td>noisy source latent + instruction</td>
+              <td>更新 latent</td>
+              <td>strength 越高，偏离源片越多</td>
+            </tr>
+          </table>
+        </div>
+      </section>
+      <section class="detail-section" id="long-video">
+        <h2>5. 长视频与续写：一次生成长片不是默认能力</h2>
+        <p>
+          长视频通常由短窗口、重叠上下文、参考帧/记忆、分镜和后期剪辑组成。FramePack
+          类方法强调按上下文管理帧序列；一般的视频模型也会受训练片段长度、时间位置编码、显存和误差累积限制。制作流程应先生成短镜头，锁定角色参考与镜头语言，再做续写和拼接。
+        </p>
+        <div class="detail-cards">
+          <a href="#framepack"
+            ><strong>FramePack</strong
+            ><span
+              >低资源长序列工作流与上下文窗口，重点是续写和内存管理。</span
+            ></a
+          ><a href="#animate"
+            ><strong>AnimateDiff</strong
+            ><span
+              >给图像扩散模型注入运动模块，适合动画/风格探索，不等于完整视频基础模型。</span
+            ></a
+          >
+        </div>
+        <div class="panel accent">
+          <h4>续写的输入输出</h4>
+          <p>
+            输入：上一段尾帧/尾部 latent、角色参考、下一镜
+            prompt、目标时长；输出：新窗口的帧序列和可用于下一次续写的尾部上下文。每次生成后检查身份、光照、相机轴线和运动速度，再决定是否继续。
+          </p>
+        </div>
+      </section>
+      <section class="detail-section" id="audio-avatar">
+        <h2>6. 音频驱动、口型和数字人</h2>
+        <p>
+          音频/数字人通常不是单一 T2V
+          模型直接完成，而是视频生成、语音识别/音频特征、口型或动作驱动、声音合成、剪辑合成的多模块工作流。输入可能是音频波形
+          [B,T_audio]、mel 特征
+          [B,T_mel,F]、人脸/身体参考和文本；输出是同步的脸部/身体帧与音频。必须评估肖像、声音和训练数据授权。
+        </p>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>模块</th>
+              <th>输入</th>
+              <th>输出</th>
+            </tr>
+            <tr>
+              <td>ASR / text</td>
+              <td>audio waveform</td>
+              <td>文字或音素时间轴</td>
+            </tr>
+            <tr>
+              <td>audio encoder</td>
+              <td>audio/mel</td>
+              <td>audio tokens/features</td>
+            </tr>
+            <tr>
+              <td>face/body driver</td>
+              <td>参考身份 + audio features</td>
+              <td>landmark/motion condition</td>
+            </tr>
+            <tr>
+              <td>video generator</td>
+              <td>condition + latent</td>
+              <td>视频帧</td>
+            </tr>
+            <tr>
+              <td>mux / post</td>
+              <td>视频 + 音频</td>
+              <td>封装后的 MP4/WebM</td>
+            </tr>
+          </table>
+        </div>
+      </section>
+      <section class="detail-section" id="families">
+        <h2>7. 按家族分开看：每个家族的输入输出与它自己的结构边界</h2>
+        <p>
+          下面每个家族的图都只描述<b>该家族公开可核验</b>的路径，并明确指出哪些部分属于“概念级路径”。不同家族不能被同一张
+          3D VAE / tubelet / 时空 attention 图代替：请按你要用的模型进入对应小节，并以其
+          <code>config.json</code>、官方仓库与模型卡为准。
+        </p>
+
+        <h3>7.1 Wan 2.1 / 2.2</h3>
+        <div class="arch-diagram">
+          <div class="arch-title">Wan 家族（以官方 config 为例）</div>
+          <div class="flow wide">
+            <div class="node">prompt（中英）</div>
+            <b class="arrow">→</b>
+            <div class="node alt">文本编码器<br />（长度上限 512）</div>
+            <b class="arrow">→ 条件序列</b>
+            <div class="node">
+              video latent [B,16,T/4,H/8,W/8]<br />（T2V 为纯噪声；I2V 额外拼入条件帧）
+            </div>
+            <b class="arrow">→ patchify + 时间条件</b>
+            <div class="node">
+              WanModel 主干<br />2.2-A14B：40 层 / dim 5120 / 40 heads / 文本长度 512
+            </div>
+            <b class="arrow">→</b>
+            <div class="node">
+              高噪声 / 低噪声专家<br />按 sigma 区间切换（MoE 式两阶段）
+            </div>
+            <b class="arrow">→ 多步 solver</b>
+            <div class="node output">
+              视频 VAE 解码 → 帧序列
+            </div>
+          </div>
+          <figcaption>
+            图 VID-04 · 已核验的 config 事实：Wan2.1-T2V-1.3B 为 <code>dim=1536</code>、30
+            层、12 heads；Wan2.2-T2V-A14B 为 <code>dim=5120</code>、40 层、40
+            heads、<code>ffn_dim=13824</code>、<code>text_len=512</code>，且由
+            <code>high_noise_model</code> 与 <code>low_noise_model</code> 两个专家组成；I2V 变体的
+            <code>in_dim=36</code>（而非 T2V 的 16），说明条件帧确实改变了输入维度。
+            <b>两阶段切换的具体 sigma 分界属于推理脚本细节，部署前必须核对</b>；Wan
+            的时间压缩率与 latent 通道数以该 checkpoint 的 VAE config 为准。
+          </figcaption>
+        </div>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>项目</th>
+              <th>Wan 2.2（官方 config 可核验）</th>
+            </tr>
+            <tr>
+              <td>输入</td>
+              <td>T2V：prompt、尺寸、帧数、fps、seed；I2V/TI2V：额外首帧或参考图</td>
+            </tr>
+            <tr>
+              <td>中间变量</td>
+              <td>
+                条件序列 token（长度上限 512）、video latent、patch 化后的 token、两套专家权重各自的调制条件
+              </td>
+            </tr>
+            <tr>
+              <td>输出</td>
+              <td>帧序列；两路专家在采样过程中按噪声区间先后参与</td>
+            </tr>
+            <tr>
+              <td>是否只是概念级路径</td>
+              <td>
+                图中“两阶段专家”是官方发布的权重结构（两个独立 config）；其余箭头是推理职责链，block
+                内部细节需读源码
+              </td>
+            </tr>
+            <tr>
+              <td>训练 / 微调边界</td>
+              <td>
+                冻结 VAE 与文本编码器；需要分别确认训练哪个专家、adapter
+                是否共享，以及推理时如何加载
+              </td>
+            </tr>
+          </table>
+        </div>
+
+        <h3>7.2 HunyuanVideo / 1.5</h3>
+        <div class="arch-diagram">
+          <div class="arch-title">HunyuanVideo 家族（概念路径 + 版本差异）</div>
+          <div class="flow wide">
+            <div class="node">prompt</div>
+            <b class="arrow">→</b>
+            <div class="node alt">文本编码器（多编码器组合）</div>
+            <b class="arrow">→ 条件序列</b>
+            <div class="node">
+              视频 VAE 编码的时空 latent<br />（时间压缩率与通道数按版本）
+            </div>
+            <b class="arrow">→</b>
+            <div class="node">
+              video Transformer<br />空间 / 时间 attention 的划分按版本
+            </div>
+            <b class="arrow">→ 多步采样</b>
+            <div class="node output">VAE 解码 → 帧序列（I2V 版本另有图像条件路径）</div>
+          </div>
+          <figcaption>
+            图 VID-05 · <b>本图是概念级路径</b>：HunyuanVideo 官方仓库以代码与配置分发，1.5
+            版本与初版在文本编码器、并行策略与支持任务上有差异。要在文档里写死“时间压缩 4× /
+            通道 16”这类数字前，必须先读该版本的 VAE 与 transformer config。
+          </figcaption>
+        </div>
+
+        <h3>7.3 CogVideoX / CogVideoX1.5</h3>
+        <div class="arch-diagram">
+          <div class="arch-title">CogVideoX 家族（config 可核验）</div>
+          <div class="flow wide">
+            <div class="node">prompt</div>
+            <b class="arrow">→</b>
+            <div class="node alt">文本编码器<br />text_embed_dim 4096，序列上限 226</div>
+            <b class="arrow">→ 条件序列</b>
+            <div class="node">
+              3D VAE：latent_channels=16<br />temporal_compression_ratio=4
+            </div>
+            <b class="arrow">→ 3D patch（2×2，1.5 版另加时间 patch）</b>
+            <div class="node">
+              CogVideoXTransformer3DModel<br />5B：42 层 / 48 heads / head_dim 64
+            </div>
+            <b class="arrow">→ 多步</b>
+            <div class="node output">3D VAE 解码 → 帧序列</div>
+          </div>
+          <figcaption>
+            图 VID-06 · 已核验的 config 事实：CogVideoX-5b 的 transformer 为
+            <code>patch_size=2</code>、<code>in/out_channels=16</code>、<code>num_layers=42</code>、<code
+              >num_attention_heads=48</code
+            >、<code>attention_head_dim=64</code>、<code>text_embed_dim=4096</code>、<code
+              >max_text_seq_length=226</code
+            >、<code>sample_frames=49</code>；VAE 为 <code>latent_channels=16</code>、<code
+              >temporal_compression_ratio=4</code
+            >、<code>scaling_factor=0.7</code>。1.5 版本增加了 <code>patch_size_t=2</code> 与更长的
+            <code>sample_frames=81</code>，因此<b>不能把 5b 与 1.5 的图混用</b>。
+          </figcaption>
+        </div>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>项目</th>
+              <th>CogVideoX-5b / 1.5-5B</th>
+            </tr>
+            <tr>
+              <td>输入</td>
+              <td>prompt、帧数、分辨率、fps、seed；I2V 额外首帧</td>
+            </tr>
+            <tr>
+              <td>中间变量</td>
+              <td>
+                文本 token [B,≤226,4096]、latent [B,16,T/4,H/8,W/8]、patched video token
+              </td>
+            </tr>
+            <tr>
+              <td>输出</td>
+              <td>帧序列（VAE 解码）</td>
+            </tr>
+            <tr>
+              <td>是否只是概念级路径</td>
+              <td>否：上表数字来自官方 config；block 内部实现仍需读源码</td>
+            </tr>
+          </table>
+        </div>
+
+        <h3>7.4 LTX-Video / LTX-2</h3>
+        <div class="arch-diagram">
+          <div class="arch-title">LTX-Video 家族（config 可核验）</div>
+          <div class="flow wide">
+            <div class="node">prompt</div>
+            <b class="arrow">→</b>
+            <div class="node alt">文本编码器<br />caption_channels=4096 → cross_attention_dim 2048</div>
+            <b class="arrow">→</b>
+            <div class="node">
+              VAE：latent_channels=128<br />patch_size=4 / patch_size_t=1，encoder_causal=true
+            </div>
+            <b class="arrow">→</b>
+            <div class="node">
+              LTXVideoTransformer3DModel<br />28 层 / 32 heads / head_dim 64
+            </div>
+            <b class="arrow">→ 多步 solver</b>
+            <div class="node output">VAE 解码 → 帧序列</div>
+          </div>
+          <figcaption>
+            图 VID-07 · 已核验：<code>latent_channels=128</code>（远高于 16，因此“视频 VAE
+            都是 16 通道”是错误概括）、<code>patch_size=4</code>、<code>patch_size_t=1</code>、<code
+              >encoder_causal=true</code
+            >/<code>decoder_causal=false</code>、<code>spatio_temporal_scaling=[true,true,true,false]</code>。<b
+              >LTX-2 的音视频联合路径属于后续版本</b
+            >：音频分支、联合 attention 与同步方式必须读 LTX-2 自己的仓库与 config，本页不把
+            LTX-Video 的结构外推成 LTX-2。
+          </figcaption>
+        </div>
+
+        <h3>7.5 AnimateDiff</h3>
+        <div class="arch-diagram">
+          <div class="arch-title">AnimateDiff：在 2D 图像扩散主干旁插入 motion module</div>
+          <div class="flow wide">
+            <div class="node">prompt</div>
+            <b class="arrow">→</b>
+            <div class="node alt">原图像模型的文本编码器</div>
+            <b class="arrow">→</b>
+            <div class="node">
+              2D U-Net（冻结）+ motion module<br />motion_max_seq_length=32
+            </div>
+            <b class="arrow">→ 时间维 attention</b>
+            <div class="node">
+              逐帧 latent 一起更新<br />（帧维当成额外序列维）
+            </div>
+            <b class="arrow">→</b>
+            <div class="node output">原图像 VAE 解码 → 帧序列</div>
+          </div>
+          <figcaption>
+            图 VID-08 · 已核验：motion adapter 的 <code>motion_max_seq_length=32</code>、<code
+              >motion_num_attention_heads=8</code
+            >、<code>motion_layers_per_block=2</code>、<code>use_motion_mid_block=true</code>、<code
+              >block_out_channels=[320,640,1280,1280]</code
+            >——这些数字恰好对应 SD 1.5 的 U-Net，因此 AnimateDiff
+            <b>不是</b>一个独立的视频基础模型：它必须搭配对应的底图 checkpoint，且不同底模之间不能混用 motion
+            module。
+          </figcaption>
+        </div>
+
+        <h3>7.6 FramePack</h3>
+        <div class="arch-diagram">
+          <div class="arch-title">FramePack：上下文窗口与分块续写（工作流级结构）</div>
+          <div class="flow wide">
+            <div class="node">首帧 / 参考帧 + prompt</div>
+            <b class="arrow">→</b>
+            <div class="node alt">
+              上下文打包：把历史帧压到固定显存预算内
+            </div>
+            <b class="arrow">→</b>
+            <div class="node">
+              逐块生成下一个 chunk<br />（已有帧作为条件，而非重复生成）
+            </div>
+            <b class="arrow">→</b>
+            <div class="node">更新上下文窗口</div>
+            <b class="arrow">↺ 循环</b>
+            <div class="node output">拼接为长视频，再做后处理与接缝检查</div>
+          </div>
+          <figcaption>
+            图 VID-09 · FramePack
+            的价值在于<b>上下文管理策略</b>（帧级压缩与分块），而不是一套新的时空主干。图中不写“时间压缩率 / latent
+            通道数”，因为它的核心不是 VAE 设计；要写微调方案前必须先确认它的上下文/分块机制由代码还是参数控制。
+          </figcaption>
+        </div>
+
+        <h3>7.7 家族对齐表：一次看清差异</h3>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>家族</th>
+              <th>latent 通道（已核验）</th>
+              <th>时间压缩（已核验）</th>
+              <th>主干（已核验）</th>
+              <th>结构来源等级</th>
+            </tr>
+            <tr>
+              <td>Wan 2.1 / 2.2</td>
+              <td>16（T2V 输入维度）</td>
+              <td>按该版本 VAE config 核验</td>
+              <td>1.3B：30 层 / dim 1536；2.2-A14B：40 层 / dim 5120 ×2 专家</td>
+              <td>官方 config 可核验</td>
+            </tr>
+            <tr>
+              <td>HunyuanVideo / 1.5</td>
+              <td>按版本 VAE config</td>
+              <td>按版本 VAE config</td>
+              <td>按版本 transformer config</td>
+              <td>官方仓库 + 模型卡，本页未取具体数值</td>
+            </tr>
+            <tr>
+              <td>CogVideoX-5b / 1.5</td>
+              <td>16</td>
+              <td>4×</td>
+              <td>42 层 / 48 heads / head_dim 64；1.5 增加 patch_size_t=2</td>
+              <td>官方 config 可核验</td>
+            </tr>
+            <tr>
+              <td>LTX-Video / LTX-2</td>
+              <td>128</td>
+              <td>见 spatio_temporal_scaling（前三级含时间）</td>
+              <td>28 层 / 32 heads；patch_size=4、patch_size_t=1</td>
+              <td>LTX-Video config 可核验；LTX-2 单独核验</td>
+            </tr>
+            <tr>
+              <td>AnimateDiff</td>
+              <td>随底图模型</td>
+              <td>无独立视频 VAE（在帧维做 attention）</td>
+              <td>依赖 SD1.5 结构 U-Net + motion module（seq len 32）</td>
+              <td>官方 motion adapter config 可核验</td>
+            </tr>
+            <tr>
+              <td>FramePack</td>
+              <td>随所用底模</td>
+              <td>不适用（上下文管理）</td>
+              <td>不是独立主干</td>
+              <td>官方仓库；工作流级结构</td>
+            </tr>
+            <tr>
+              <td>MiniMax H3</td>
+              <td>视觉 24（f16t4d24）</td>
+              <td>4×（patch 1×2×2 后 token 空间 32×、时间 4×）</td>
+              <td>33B dense single-stream，含约 13B AdaLN 参数</td>
+              <td>官方公告可核验（见 <a href="video-h3.html">H3 专页</a>）</td>
+            </tr>
+          </table>
+        </div>
+        <div class="callout">
+          <strong>这张表能证明什么、不能证明什么：</strong>“已核验”列的内容来自官方
+          config 或官方公告，可直接引用；空着或写“按版本核验”的单元格属于<b>本页未取到公开数值</b>，不得用其他家族的数字
+          填充。想确认某个具体 checkpoint，请读取它的
+          <code>vae/config.json</code>（<code>latent_channels</code>、<code
+            >temporal_compression_ratio</code
+          >、<code>patch_size</code>）与 <code>transformer/config.json</code>（<code>num_layers</code>、<code
+            >num_attention_heads</code
+          >、<code>in_channels</code>）。
+        </div>
+      </section>
+
+      <section class="detail-section" id="models">
+        <h2>8. 模型逐个看：公开结构与部署边界</h2>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>模型</th>
+              <th>能做什么</th>
+              <th>架构信息</th>
+              <th>本地判断</th>
+            </tr>
+            <tr id="wan">
+              <td><strong>Wan 2.2</strong></td>
+              <td>T2V、I2V、TI2V，依 checkpoint 变化</td>
+              <td>
+                视频 VAE + diffusion Transformer；部分高/低噪声专家 MoE；时空
+                token
+              </td>
+              <td>官方代码/权重开放，5B/14B 变体显存和命令不同</td>
+            </tr>
+            <tr id="hunyuan">
+              <td><strong>HunyuanVideo / 1.5</strong></td>
+              <td>T2V、I2V 和版本相关任务</td>
+              <td>
+                潜视频压缩 + video Transformer；文本/图像条件路径由版本决定
+              </td>
+              <td>按官方 README 核对显存、分辨率、帧数和许可</td>
+            </tr>
+            <tr id="cogvideo">
+              <td><strong>CogVideoX</strong></td>
+              <td>T2V、I2V、视频编辑训练/推理</td>
+              <td>3D VAE + video Transformer；3D patch、时间位置和文本条件</td>
+              <td>官方仓库与 Diffusers 集成，尺寸/帧数依版本</td>
+            </tr>
+            <tr id="ltx">
+              <td><strong>LTX-Video / LTX-2</strong></td>
+              <td>视频生成、后续版本的音视频工作流</td>
+              <td>
+                时空 latent + diffusion Transformer；具体音频联合路径看版本
+              </td>
+              <td>开放变体，先按显存和许可证选择</td>
+            </tr>
+            <tr id="h3">
+              <td>
+                <strong><a href="video-h3.html">MiniMax H3</a></strong>
+              </td>
+              <td>
+                T2V、I2V、V2V、文本/图像/视频/音频条件的音视频生成；具体任务随
+                checkpoint/API 版本核对
+              </td>
+              <td>
+                统一多模态上下文；公开仓库描述 H3-Omni-Transformer
+                联合预测视频与音频 latent，再分别解码为视频和立体声音频
+              </td>
+              <td>
+                公开资料给出最高 2K、15
+                秒等能力边界；部署显存、分辨率、时长、许可和 exact config
+                以模型卡与 checkpoint 为准
+              </td>
+            </tr>
+            <tr id="framepack">
+              <td><strong>FramePack</strong></td>
+              <td>低资源长视频/续写工作流</td>
+              <td>重点是上下文帧管理和分块生成，不能等同于一个通用基础模型</td>
+              <td>适合低资源探索，长程一致性仍需镜头级检查</td>
+            </tr>
+            <tr id="animate">
+              <td><strong>AnimateDiff</strong></td>
+              <td>动画化、运动风格、图像模型视频化</td>
+              <td>在 2D 图像扩散主干旁加入 motion module/时间建模</td>
+              <td>依赖底图 checkpoint，生态兼容性需逐版本确认</td>
+            </tr>
+            <tr>
+              <td>托管模型</td>
+              <td>Runway、Kling、Veo、Sora 等产品/API</td>
+              <td>
+                公开功能和论文有限，生产 encoder、数据、损失和后处理通常未知
+              </td>
+              <td>不可据公开体验宣称完整本地架构或可微调</td>
+            </tr>
+          </table>
+        </div>
+        <p>
+          官方资料：<a
+            href="https://github.com/Wan-Video/Wan2.2"
+            target="_blank"
+            rel="noopener"
+            >Wan2.2</a
+          >
+          ·
+          <a
+            href="https://github.com/Tencent-Hunyuan/HunyuanVideo-1.5"
+            target="_blank"
+            rel="noopener"
+            >HunyuanVideo-1.5</a
+          >
+          ·
+          <a
+            href="https://github.com/THUDM/CogVideo"
+            target="_blank"
+            rel="noopener"
+            >CogVideo</a
+          >
+          ·
+          <a
+            href="https://github.com/Lightricks/LTX-2"
+            target="_blank"
+            rel="noopener"
+            >LTX-2</a
+          >
+          ·
+          <a
+            href="https://github.com/lllyasviel/FramePack"
+            target="_blank"
+            rel="noopener"
+            >FramePack</a
+          >
+          ·
+          <a
+            href="https://huggingface.co/MiniMaxAI/MiniMax-H3"
+            target="_blank"
+            rel="noopener"
+            >MiniMax H3 模型卡</a
+          >
+          · <a href="video-h3.html">H3 独有结构详解</a> ·
+          <a
+            href="https://arxiv.org/abs/2408.06072"
+            target="_blank"
+            rel="noopener"
+            >CogVideoX 论文</a
+          >
+        </p>
+      </section>
+      <section class="detail-section" id="finetune">
+        <h2>9. 视频 LoRA：通用目标层与每种模型的核验方法</h2>
+        <p>
+          视频 LoRA 原型通常冻结 3D VAE 和文本 encoder，只在 video transformer
+          的空间/时间 attention q/k/v/out、MLP projection、motion module 或
+          condition projection
+          上训练。若模型有高低噪声专家或多个分支，必须明确训练哪个
+          expert、是否共享 adapter，以及推理时如何加载。
+        </p>
+        <h3>每个视频模型的数据和训练方式</h3>
+        <p>
+          视频微调不能把图片 LoRA
+          直接扩展到视频。每条样本至少追踪视频文件、caption、FPS、帧数、裁剪、音频采样率、主体/动作标签、参考帧和许可证；训练/验证按视频或主体切分，不能按帧随机切分，否则相邻帧会泄漏。先固定短
+          clip 和尺寸 bucket，验证通过后再增加时长或分辨率。
+        </p>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>模型/家族</th>
+              <th>数据应包含</th>
+              <th>优先训练方式</th>
+              <th>专项验收</th>
+            </tr>
+            <tr>
+              <td>Wan 2.2</td>
+              <td>
+                T2V clip-caption；I2V 还要首帧/参考图；记录高低噪声 expert
+              </td>
+              <td>
+                按官方脚本给的模块挂 video-transformer LoRA；确认两个 expert
+                是否分别训练
+              </td>
+              <td>动作、主体、低/高噪声阶段和不同镜头长度</td>
+            </tr>
+            <tr>
+              <td>HunyuanVideo / 1.5</td>
+              <td>短视频、精确 caption、FPS/分辨率；I2V 加源图和起始帧</td>
+              <td>
+                冻结 VAE/文本编码器，训练时空 attention/MLP LoRA 或官方 adapter
+              </td>
+              <td>运动幅度、闪烁、镜头和未见主体</td>
+            </tr>
+            <tr>
+              <td>CogVideoX</td>
+              <td>固定帧数 clip + caption；I2V 成对 source clip/target clip</td>
+              <td>优先 temporal/spatial attention LoRA；3D VAE 不随意解冻</td>
+              <td>跨帧身份、动作连续性、首尾帧和文本遵循</td>
+            </tr>
+            <tr>
+              <td>LTX-Video / LTX-2</td>
+              <td>视频 caption；LTX-2 还要音频、采样率、音画时间对齐</td>
+              <td>
+                分别核对 video/audio 分支和官方训练入口，必要时只训
+                motion/adapter
+              </td>
+              <td>运动、音画同步、语音/声音质量和长短片段</td>
+            </tr>
+            <tr>
+              <td>AnimateDiff</td>
+              <td>图像底模对应的短动画 clip、帧级 caption 或运动标签</td>
+              <td>
+                冻结 2D base U-Net，主要训练 motion module；不要混用不兼容底模
+              </td>
+              <td>动作循环、风格一致、单帧画质和闪烁</td>
+            </tr>
+            <tr>
+              <td>FramePack</td>
+              <td>长视频拆成带重叠上下文的片段、首尾帧/记忆窗口和镜头标签</td>
+              <td>
+                先核对上下文/分块机制；通常训练适配器而非把拼接逻辑当 LoRA 层
+              </td>
+              <td>续写接缝、长程身份、镜头切换和误差累积</td>
+            </tr>
+            <tr>
+              <td>MiniMax H3</td>
+              <td>视频、音频、文本和条件组合；音频采样率、时长、同步标注</td>
+              <td>
+                先分离 video/audio/shared/condition target，再决定单模态或联合
+                LoRA
+              </td>
+              <td>动作、音画同步、语音清晰度、跨模态条件遵循</td>
+            </tr>
+          </table>
+        </div>
+        <div class="code-block">
+          <span class="code-label"
+            >JSONL · T2V / I2V / 音视频统一元数据样例</span
+          >
+          <pre><code>{"video":"clips/shot_001.mp4","caption":"a red bicycle rides through a rainy street, slow camera pan","fps":16,"num_frames":81,"width":832,"height":480,"motion":"camera_pan","split":"train","license":"owned"}
+{"source_video":"clips/source_014.mp4","target_video":"clips/target_014.mp4","reference_image":"refs/hero.png","instruction":"保持人物身份，让人物向右跑","fps":16,"num_frames":49,"split":"validation"}
+{"video":"av/shot_022.mp4","audio":"av/shot_022.wav","caption":"a drummer performs a fast rhythm","audio_sr":48000,"av_offset_ms":0,"split":"train"}</code></pre>
+        </div>
+        <p>
+          训练目标依模型而定：扩散模型在随机噪声时间步预测 epsilon/v，flow
+          模型预测 velocity；时空 VAE 先把 clip 压成
+          <code>[B,C,T',H',W']</code>，然后对空间和时间 token
+          做预测。显存不足时先减少帧数、分辨率和 batch，使用梯度检查点和
+          LoRA；不要用单帧 FID 代替视频验收。每次实验固定
+          sampler/solver、帧数、FPS、seed、LoRA 权重和模型
+          revision，保存训练集之外的主体、动作、镜头、闪烁和同步回归集。
+        </p>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>候选层</th>
+              <th>输入</th>
+              <th>输出</th>
+              <th>学习的变化</th>
+            </tr>
+            <tr>
+              <td>spatial attention</td>
+              <td>同帧 video tokens</td>
+              <td>空间 context</td>
+              <td>构图、物体关系、空间风格</td>
+            </tr>
+            <tr>
+              <td>temporal attention</td>
+              <td>跨帧 tokens</td>
+              <td>时间 context</td>
+              <td>动作、身份、镜头运动</td>
+            </tr>
+            <tr>
+              <td>MLP / FFN</td>
+              <td>token hidden</td>
+              <td>同形状 hidden</td>
+              <td>纹理、概念和通道表征</td>
+            </tr>
+            <tr>
+              <td>motion/condition projection</td>
+              <td>运动、图像、音频条件</td>
+              <td>条件 hidden</td>
+              <td>动作驱动、参考图或音频对齐</td>
+            </tr>
+          </table>
+        </div>
+        <div class="code-block">
+          <span class="code-label">Python · 不能猜模块名，先打印实际主干</span>
+          <pre><code>for name, module in pipe.transformer.named_modules(): print(name, type(module).__name__)</code></pre>
+        </div>
+        <p>
+          数据要同时固定 clip FPS、时长、裁剪、caption、参考帧、分辨率和
+          bucket。评测至少包含训练主体未出现的镜头、不同动作、长短片段、闪烁、身份一致性和音画同步。视频显存会随帧数和
+          token 数迅速上升，先用少帧/低分辨率/小 rank 跑通。
+        </p>
+      </section>
+      <section class="detail-section">
+        <h2>10. 工作流例子：从镜头到成片</h2>
+        <div class="arch-diagram">
+          <div class="flow">
+            <div class="node">剧本 / 分镜<br />角色参考与授权</div>
+            <b class="arrow">→</b>
+            <div class="node alt">关键帧 / I2V<br />低分辨率预览</div>
+            <b class="arrow">→</b>
+            <div class="node">短镜头续写<br />尾帧/参考记忆</div>
+            <b class="arrow">→</b>
+            <div class="node alt">V2V / 超分 / 插帧<br />音频与字幕</div>
+            <b class="arrow">→</b>
+            <div class="node output">剪辑、调色、封装<br />人工质检</div>
+          </div>
+          <figcaption>
+            图
+            VID-03：生成模型负责短镜头，剪辑和后期负责叙事、同步、字幕和可审计输出。
+          </figcaption>
+        </div>
+        <p>
+          工作流每个节点记录输入哈希、模型
+          revision、seed、尺寸、帧数、FPS、采样步数、LoRA
+          权重和失败重试。批量生成时可把文本编码/预处理放 CPU 或独立
+          GPU，把同一镜头的主生成卡显存留给时空主干。
+        </p>
+      </section>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,533 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>图像模型总览：公共模块与模型入口 | 生成模型工程手册</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="detail.css" />
+    <script defer src="detail.js"></script>
+  </head>
+  <body>
+    <div class="detail-top">
+      <a href="index.html#image-models">← 返回主页图像章节</a
+      ><span>图像模型公共知识</span><a href="image-sdxl.html">SDXL 详解 →</a>
+    </div>
+    <main class="detail-reader">
+      <div class="eyebrow">图像模型总览 / 公共模块</div>
+      <h1>先学共同骨架，再进入每个模型的独立结构页</h1>
+      <p class="lead">
+        SDXL、SD3、FLUX、Qwen-Image
+        的主干不同，但都可以用同一套问题阅读：输入条件是什么？图像如何进入
+        latent？主干每层接收和输出什么？训练预测什么？scheduler
+        如何更新？最后怎样解码成 RGB？本页讲公共部分，模型差异进入独立详页。
+      </p>
+      <div class="detail-terms">
+        <b>VAE = Variational Autoencoder</b
+        ><b>U-Net = 多尺度卷积编码器-解码器</b><b>DiT = Diffusion Transformer</b
+        ><b>MMDiT = Multimodal Diffusion Transformer</b
+        ><b>CFG = Classifier-Free Guidance</b><b>LoRA = Low-Rank Adaptation</b
+        ><b>latent = 潜空间张量</b><b>patchify = 网格切 token</b>
+      </div>
+      <nav class="detail-nav" aria-label="本页目录">
+        <a href="#common-flow">公共数据流</a><a href="#vae">VAE</a
+        ><a href="#condition">文本与条件</a><a href="#backbones">U-Net / DiT</a
+        ><a href="#sampling">训练与采样</a><a href="#functions">功能选型</a
+        ><a href="#model-pages">模型详页</a><a href="#finetune">微调入口</a>
+      </nav>
+
+      <section class="detail-section" id="common-flow">
+        <h2>1. 所有图像生成模型都可以先画成这条数据流</h2>
+        <div class="arch-diagram">
+          <div class="arch-title">共同的 latent 生成接口</div>
+          <div class="flow wide">
+            <div class="node">文本 / 参考图 / mask<br />外部条件</div>
+            <b class="arrow">→</b>
+            <div class="node alt">Tokenizer + encoder<br />条件 embedding</div>
+            <b class="arrow">+</b>
+            <div class="node">随机噪声或输入图 latent<br />[B,C,H',W']</div>
+            <b class="arrow">→</b>
+            <div class="node alt">
+              U-Net / DiT 主干<br />输入 latent + t + condition
+            </div>
+            <b class="arrow">→</b>
+            <div class="node">Scheduler / ODE solver<br />重复 N 步</div>
+            <b class="arrow">→</b>
+            <div class="node output">VAE decode<br />RGB [B,3,H,W]</div>
+          </div>
+          <figcaption>
+            图 IMG-01：主干一般不直接预测 RGB；它预测与 latent 同形状或同 token
+            数的噪声、速度或数据残差。
+          </figcaption>
+        </div>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>接口</th>
+              <th>典型输入</th>
+              <th>典型输出</th>
+              <th>关键问题</th>
+            </tr>
+            <tr>
+              <td>条件编码</td>
+              <td>字符串、参考图、控制图</td>
+              <td>序列 hidden、pooled embedding、控制 feature</td>
+              <td>
+                条件由 cross-attention、joint attention、AdaLN 还是 adapter
+                注入？
+              </td>
+            </tr>
+            <tr>
+              <td>主干</td>
+              <td>noisy latent、t/sigma、条件</td>
+              <td>noise / v / velocity prediction</td>
+              <td>层数、宽度、头数、patch、位置编码和归一化是什么？</td>
+            </tr>
+            <tr>
+              <td>采样</td>
+              <td>当前 latent、主干输出、时间表</td>
+              <td>下一步 latent</td>
+              <td>
+                传统 diffusion 还是 flow matching？solver 和 guidance 如何匹配？
+              </td>
+            </tr>
+            <tr>
+              <td>解码</td>
+              <td>clean latent</td>
+              <td>RGB 图像</td>
+              <td>VAE scaling、下采样倍数、色彩范围和后处理是什么？</td>
+            </tr>
+          </table>
+        </div>
+      </section>
+
+      <section class="detail-section" id="vae">
+        <h2>2. VAE：像素和主干之间的公共接口</h2>
+        <div class="arch-diagram">
+          <div class="flow">
+            <div class="node">RGB x<br />[B,3,H,W]</div>
+            <b class="arrow">→</b>
+            <div class="node alt">Encoder<br />Conv + ResNet + downsample</div>
+            <b class="arrow">→</b>
+            <div class="node">latent z<br />[B,C,H/f,W/f]</div>
+            <b class="arrow">→</b>
+            <div class="node output">Decoder<br />upsample + Conv</div>
+            <b class="arrow">→</b>
+            <div class="node">RGB x-hat<br />[B,3,H,W]</div>
+          </div>
+          <figcaption>
+            f 是空间压缩倍数；不同家族的 C、f、scaling factor 和 VAE
+            权重不能直接混用。
+          </figcaption>
+        </div>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>模块</th>
+              <th>输入</th>
+              <th>内部形式</th>
+              <th>输出</th>
+            </tr>
+            <tr>
+              <td>Encoder</td>
+              <td>RGB float [B,3,H,W]</td>
+              <td>卷积、ResNet、归一化、下采样</td>
+              <td>分布参数或 latent [B,C,H/f,W/f]</td>
+            </tr>
+            <tr>
+              <td>Latent scaling</td>
+              <td>z</td>
+              <td>按模型特定常数缩放</td>
+              <td>送入 scheduler/主干的 z'</td>
+            </tr>
+            <tr>
+              <td>Decoder</td>
+              <td>clean z'</td>
+              <td>反缩放、ResNet、上采样、输出卷积</td>
+              <td>RGB 或 [-1,1] 范围图像</td>
+            </tr>
+          </table>
+        </div>
+        <p>
+          这解释了“为什么可以改变分辨率”：只要新 H、W 经 VAE 下采样后形成合法
+          latent 网格，卷积路径或 patch
+          路径就能运行。但训练分布、位置编码范围、显存和图像质量会限制可用范围，模型卡写的推荐尺寸优先于理论最大尺寸。
+        </p>
+      </section>
+
+      <section class="detail-section" id="condition">
+        <h2>3. 文本、参考图和控制条件怎样进入模型</h2>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>条件模块</th>
+              <th>输入</th>
+              <th>输出</th>
+              <th>注入位置</th>
+            </tr>
+            <tr>
+              <td>Tokenizer</td>
+              <td>prompt string</td>
+              <td>input_ids [B,S]</td>
+              <td>文本编码器输入</td>
+            </tr>
+            <tr>
+              <td>CLIP / T5 / 其他文本编码器</td>
+              <td>input_ids</td>
+              <td>per-token hidden [B,S,D]；可有 pooled [B,D]</td>
+              <td>U-Net cross-attention、DiT joint attention 或时间条件</td>
+            </tr>
+            <tr>
+              <td>参考图 encoder / VAE</td>
+              <td>RGB [B,3,H,W]</td>
+              <td>image latent 或 image embedding</td>
+              <td>
+                I2I 初始 latent、IP-Adapter、joint attention 或专用 edit
+                condition
+              </td>
+            </tr>
+            <tr>
+              <td>ControlNet / adapter</td>
+              <td>边缘、深度、姿态、分割等控制图</td>
+              <td>多尺度 residual 或 token</td>
+              <td>U-Net 各 stage 或 Transformer block</td>
+            </tr>
+            <tr>
+              <td>timestep / sigma embedding</td>
+              <td>标量 t 或 sigma</td>
+              <td>condition vector [B,D]</td>
+              <td>AdaLN 的 scale/shift/gate、额外 token 或 MLP</td>
+            </tr>
+          </table>
+        </div>
+        <p>
+          同一个词不会直接变成像素。它先被编码为向量，再通过注意力改变 latent
+          token。cross-attention 通常是 Q=image、K/V=text；joint attention
+          会让两类 token 在同一 attention 中交互；AdaLN
+          则把全局条件变成归一化后的通道调制。
+        </p>
+      </section>
+
+      <section class="detail-section" id="backbones">
+        <h2>4. U-Net、DiT、MMDiT：主干共同模块的区别</h2>
+        <div class="compare">
+          <div class="panel accent">
+            <h4>U-Net 路径</h4>
+            <p>
+              输入 latent 经过 DownBlock 降低 H/W，MidBlock 建模大范围关系，再由
+              UpBlock 恢复空间尺寸；skip connection
+              把高分辨率细节送回上采样。SDXL 详见
+              <a href="image-sdxl.html">SDXL 结构页</a>。
+            </p>
+          </div>
+          <div class="panel accent">
+            <h4>DiT 路径</h4>
+            <p>
+              latent 网格切成 image tokens，重复 Transformer block，再将 token
+              还原为 latent patch。图像 token 数 N=H'/p × W'/p，改变尺寸就是改变
+              N。
+            </p>
+          </div>
+          <div class="panel accent">
+            <h4>MMDiT 路径</h4>
+            <p>
+              文本 token 与图像 token 各自投影、归一化，在联合 attention
+              交互，再分别经过各自的 feed-forward/residual。SD3 的细节在
+              <a href="image-dit.html">SD3 / MMDiT 页</a>。
+            </p>
+          </div>
+        </div>
+        <div class="arch-diagram">
+          <div class="flow stack">
+            <div class="node input">
+              tokens + t/sigma condition<br />[B,N,D]
+            </div>
+            <b class="arrow">↓</b>
+            <div class="node">Norm / AdaLN<br />输入归一化和条件调制</div>
+            <b class="arrow">↓</b>
+            <div class="node alt">
+              QKV Linear → attention → output Linear<br />位置编码作用于 Q/K
+            </div>
+            <b class="arrow">↓</b>
+            <div class="node">Residual add</div>
+            <b class="arrow">↓</b>
+            <div class="node alt">
+              Norm / AdaLN → MLP/FFN<br />逐 token 非线性变换
+            </div>
+            <b class="arrow">↓</b>
+            <div class="node output">Residual add → 下一 block</div>
+          </div>
+          <figcaption>
+            图 IMG-02：MLP 通常位于 attention residual 之后，是每个 Transformer
+            block 的第二个子层；它混合通道，不直接混合空间位置。
+          </figcaption>
+        </div>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>子模块</th>
+              <th>输入形状</th>
+              <th>输出形状</th>
+              <th>作用</th>
+            </tr>
+            <tr>
+              <td>QKV projection</td>
+              <td>[B,N,D]</td>
+              <td>Q/K/V [B,heads,N,d]</td>
+              <td>生成注意力子空间</td>
+            </tr>
+            <tr>
+              <td>Attention</td>
+              <td>Q/K/V</td>
+              <td>context [B,N,D]</td>
+              <td>混合 token 之间的信息</td>
+            </tr>
+            <tr>
+              <td>MLP / FFN</td>
+              <td>[B,N,D]</td>
+              <td>[B,N,D]</td>
+              <td>对每个 token 做升维、激活/门控、降维</td>
+            </tr>
+            <tr>
+              <td>Output head</td>
+              <td>final image tokens</td>
+              <td>[B,N,C·p²] 或 latent update</td>
+              <td>还原 patch 或预测速度/噪声</td>
+            </tr>
+          </table>
+        </div>
+        <p>
+          <strong>不要自动把所有 MLP 都叫 SwiGLU。</strong>语言模型常见
+          <code>gate_proj/up_proj/down_proj</code> 的 SwiGLU；图像模型可能使用
+          GEGLU、普通 GELU FFN、门控 AdaLN 或融合 kernel。实际类型和参数名必须看
+          checkpoint config、源码和 <code>named_modules()</code>。
+        </p>
+      </section>
+
+      <section class="detail-section" id="sampling">
+        <h2>5. 训练目标、采样器和 CFG 是三个不同层次</h2>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>层次</th>
+              <th>训练/推理输入</th>
+              <th>输出</th>
+              <th>说明</th>
+            </tr>
+            <tr>
+              <td>训练 target</td>
+              <td>clean latent z0、噪声 z1、随机 t</td>
+              <td>epsilon、v、x0 或 velocity</td>
+              <td>由具体模型的参数化决定</td>
+            </tr>
+            <tr>
+              <td>主干 forward</td>
+              <td>zt、t/sigma、文本/图像条件</td>
+              <td>与 zt 同形状的预测</td>
+              <td>它是可训练网络</td>
+            </tr>
+            <tr>
+              <td>scheduler / ODE solver</td>
+              <td>当前 z、预测、时间步</td>
+              <td>下一步 z</td>
+              <td>它是数值更新过程，不是主干层</td>
+            </tr>
+            <tr>
+              <td>CFG</td>
+              <td>conditional 与 unconditional 输出</td>
+              <td>组合后的 prediction</td>
+              <td>提高条件遵循，但 scale 过大可能过饱和</td>
+            </tr>
+          </table>
+        </div>
+        <p>
+          传统扩散常用加噪与去噪的 beta/sigma 时间表；flow matching
+          定义从噪声到数据的路径，让 Transformer 预测速度场，再用 Euler、Heun
+          等数值积分。FLUX 和 Qwen-Image 详页会分别说明自身的 pipeline
+          参数，不能把 scheduler 名称和 guidance 参数跨家族照抄。
+        </p>
+      </section>
+
+      <section class="detail-section" id="functions">
+        <h2>6. 按功能选择模型，而不是先背品牌</h2>
+        <div class="table-wrap">
+          <table>
+            <tr>
+              <th>功能领域</th>
+              <th>输入</th>
+              <th>优先关注的模块</th>
+              <th>模型入口</th>
+            </tr>
+            <tr>
+              <td>文生图 T2I</td>
+              <td>prompt、尺寸、seed</td>
+              <td>文本编码、主干、采样器、VAE</td>
+              <td>
+                <a href="image-sdxl.html">SDXL</a> /
+                <a href="image-dit.html">SD3</a> /
+                <a href="image-flux.html">FLUX</a> /
+                <a href="image-qwen.html">Qwen-Image</a>
+              </td>
+            </tr>
+            <tr>
+              <td>图生图 / 风格化</td>
+              <td>RGB 参考图 + strength</td>
+              <td>VAE encode、初始 latent、去噪强度</td>
+              <td><a href="image-modules.html#i2i">通用 I2I 模块</a></td>
+            </tr>
+            <tr>
+              <td>局部重绘 / 编辑</td>
+              <td>原图 + mask + 指令</td>
+              <td>mask 对齐、编辑条件、边缘融合</td>
+              <td>
+                <a href="image-qwen.html#edit">Qwen-Image Edit</a> /
+                <a href="image-modules.html#inpaint">Inpaint</a>
+              </td>
+            </tr>
+            <tr>
+              <td>结构控制</td>
+              <td>姿态、深度、边缘、分割</td>
+              <td>预处理器、ControlNet/adapter、控制强度</td>
+              <td>
+                <a href="image-modules.html#control">ControlNet / IP-Adapter</a>
+              </td>
+            </tr>
+            <tr>
+              <td>修复与超分</td>
+              <td>低清、划痕、噪声图</td>
+              <td>退化模型、重建先验、是否产生新细节</td>
+              <td><a href="image-modules.html#sr">修复与超分</a></td>
+            </tr>
+          </table>
+        </div>
+      </section>
+
+      <section class="detail-section" id="model-pages">
+        <h2>7. 独立模型结构页</h2>
+        <div class="detail-cards">
+          <a href="image-sdxl.html"
+            ><strong>SD 1.5 / SDXL</strong
+            ><span
+              >VAE、双文本编码器、U-Net
+              Down/Mid/Up、cross-attention、scheduler、LoRA</span
+            ></a
+          ><a href="image-dit.html"
+            ><strong>SD3 / SD3.5 MMDiT</strong
+            ><span
+              >image/text 双流、joint attention、AdaLN、flow matching、MLP
+              所在位置</span
+            ></a
+          ><a href="image-flux.html"
+            ><strong>FLUX</strong
+            ><span
+              >CLIP/T5 条件、double-stream、single-stream、FluxTransformer
+              配置、LoRA</span
+            ></a
+          ><a href="image-qwen.html"
+            ><strong>Qwen-Image / Edit</strong
+            ><span>20B MMDiT 类主干、可变分辨率、图像编辑条件、LoRA</span></a
+          ><a href="image-modules.html"
+            ><strong>通用图像处理模块</strong
+            ><span
+              >ControlNet、IP-Adapter、inpaint、超分、每个模块的输入输出</span
+            ></a
+          >
+        </div>
+        <p>
+          阅读顺序建议：先看本页第 1—5
+          节，接着打开一个模型页完整走一遍，再用同样的问题阅读其他家族。这样可以分辨“通用接口”和“该模型真正实现”，也能知道哪些数字必须从具体
+          checkpoint 配置中读取。
+        </p>
+      </section>
+
+      <section class="detail-section" id="finetune">
+        <h2>8. 公共微调知识与模型入口</h2>
+        <p>
+          LoRA 把冻结矩阵 W 的更新写成
+          <code>ΔW=(alpha/r)BA</code>。图像生成常先冻结 VAE
+          和文本编码器，只训练主干 attention projection、MLP projection 或专用
+          condition projection；是否训练 text encoder、目标层名称和 rank
+          要按模型训练脚本确认。
+        </p>
+        <div class="detail-cards">
+          <a href="image-sdxl.html#finetune"
+            ><strong>SDXL 微调</strong
+            ><span>U-Net attention、feed-forward 和可选 text encoder</span></a
+          ><a href="image-dit.html#finetune"
+            ><strong>SD3 微调</strong
+            ><span>双流/联合 attention 与 feed-forward target</span></a
+          ><a href="image-flux.html#finetune"
+            ><strong>FLUX 微调</strong
+            ><span>double/single stream qkv、out、MLP</span></a
+          ><a href="image-qwen.html#finetune"
+            ><strong>Qwen-Image 微调</strong
+            ><span>Transformer 与 Edit 条件分支</span></a
+          >
+        </div>
+        <p>
+          每个详页都给出 <code>named_modules()</code> 核验片段；不要只根据网上的
+          target_modules 列表训练，因为 fused QKV、模块命名、checkpoint
+          版本和训练脚本都会改变可挂载位置。
+        </p>
+        <h3>图像微调的通用数据合同</h3>
+        <p>
+          文生图至少需要 image + caption；主体/风格任务还要 subject/style
+          标签；编辑任务需要 source、target、instruction，局部编辑再加入
+          mask；ControlNet 任务要保留原图与对应的 edge/depth/pose
+          控制图。按主体、来源或拍摄批次切分，去除近重复，记录宽高、裁剪、许可证、模型
+          revision 和验证提示。
+        </p>
+        <div class="code-block">
+          <span class="code-label">JSONL · 图像任务通用样本</span>
+          <pre><code>{"image":"train/001.jpg","caption":"a ceramic cup on a wooden desk, soft window light","subject":"cup_a","style":"product_photo","width":1024,"height":1024,"split":"train","license":"owned"}
+{"source":"edit/in.png","target":"edit/out.png","instruction":"把杯子改成蓝色，保留桌面纹理","mask":"edit/mask.png","split":"validation"}
+{"image":"control/pose_01.jpg","control":"control/pose_01.json","control_type":"pose","caption":"a person standing","split":"train"}</code></pre>
+        </div>
+        <p>
+          训练时统一 VAE scaling、尺寸 bucket、caption 模板、随机 timestep/sigma
+          和预测 target；优先冻结 VAE/文本编码器做主干
+          LoRA，只有明确需要时才训练 condition projection 或 text
+          encoder。验收至少包括未见主体/背景、不同宽高比、长短
+          prompt、非目标区域保持、文字准确率和基座旧能力，不能只用训练集图片或
+          loss 判断。
+        </p>
+      </section>
+      <p>
+        一手资料：<a
+          href="https://arxiv.org/abs/2112.10752"
+          target="_blank"
+          rel="noopener"
+          >Latent Diffusion</a
+        >
+        ·
+        <a
+          href="https://arxiv.org/abs/2212.09748"
+          target="_blank"
+          rel="noopener"
+          >DiT</a
+        >
+        ·
+        <a
+          href="https://arxiv.org/abs/2403.03206"
+          target="_blank"
+          rel="noopener"
+          >SD3</a
+        >
+        ·
+        <a
+          href="https://arxiv.org/abs/2210.02747"
+          target="_blank"
+          rel="noopener"
+          >Flow Matching</a
+        >
+        ·
+        <a
+          href="https://arxiv.org/abs/2106.09685"
+          target="_blank"
+          rel="noopener"
+          >LoRA</a
+        >
+      </p>
+    </main>
+  </body>
+</html>

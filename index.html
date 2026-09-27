@@ -1,0 +1,4315 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>生成模型工程手册 | 部署、影像与训练</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="detail.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar" id="sidebar" aria-label="章节导航">
+        <div class="brand">
+          <span class="brand-mark">GM</span>
+          <div>
+            <strong>生成模型工程手册</strong
+            ><small>从单卡到集群 · 从推理到训练</small>
+          </div>
+        </div>
+        <div class="sidebar-search">
+          <label for="search">检索章节</label
+          ><input
+            id="search"
+            type="search"
+            placeholder="例如：QLoRA / VAE / 多卡"
+            autocomplete="off"
+          /><kbd>/</kbd>
+        </div>
+        <nav id="toc"></nav>
+        <div class="sidebar-foot">
+          <span class="live-dot"></span
+          >资料核对：2026-09-25<br />优先采用论文、官方文档与项目仓库
+        </div>
+      </aside>
+      <div class="main-column">
+        <header class="topbar">
+          <button class="menu-button" id="menu" aria-label="打开章节导航">
+            ☰</button
+          ><span id="crumb">阅读指南</span>
+          <div class="top-actions">
+            <span id="progressText">0 / 0</span>
+            <div class="progress-track"><i id="progressBar"></i></div>
+            <button id="theme" aria-label="切换明暗主题" title="切换明暗主题">
+              ◐
+            </button>
+          </div>
+        </header>
+        <main id="reader" tabindex="-1">
+          <section
+            class="chapter"
+            id="start"
+            data-group="导读"
+            data-title="阅读指南"
+          >
+            <div class="eyebrow">00 / 使用这本书</div>
+            <h1>生成模型工程手册</h1>
+            <p class="lead">
+              把模型放进显存、让多卡真正工作、理解图像和视频生成，再训练自己的适配器或学生模型。你已具备注意力与反向传播基础；这里从工程约束开始，逐层走到可复现的实验。
+            </p>
+            <div class="tagline">
+              <span class="tag">按正文顺序阅读</span
+              ><span class="tag">3 部主线</span
+              ><span class="tag">模型详情分页</span
+              ><span class="tag">一手资料索引</span>
+            </div>
+            <div class="book-roadmap" aria-label="正文阅读顺序">
+              <div class="roadmap-step">
+                <span>01</span><strong>语言模型结构</strong
+                ><small>token → attention → MLP → 训练目标</small>
+              </div>
+              <div class="roadmap-step">
+                <span>02</span><strong>图像与视频 + 训练</strong
+                ><small>通用模块 → 损失 → 微调/蒸馏 → 具体模型</small>
+              </div>
+              <div class="roadmap-step">
+                <span>03</span><strong>部署与并行</strong
+                ><small>量化 → 服务 → DP / TP / PP / FSDP</small>
+              </div>
+            </div>
+            <h3>学习顺序与边界</h3>
+            <p>
+              请从第一部开始向下读。每一部先解释通用模块，再在正文中按任务引出模型特色；当你看到某个模型名称时，旁边的详细链接会打开该模型的结构、模块输入输出、尺寸变化和微调边界。每个代码示例都是<strong>最小骨架</strong>，版本、显卡支持、许可证和模型卡要以运行当天的官方说明为准。
+            </p>
+            <div class="compare">
+              <div class="panel accent">
+                <h4>完成后应能做到</h4>
+                <p>
+                  根据显存、互联、上下文、吞吐、训练目标选精度与并行方式；读懂生成模型的条件路径；跑通一次
+                  LoRA 与一次离线蒸馏。
+                </p>
+              </div>
+              <div class="panel warn">
+                <h4>这不是“所有模型”的静态名录</h4>
+                <p>
+                  主流代表与筛选方法比瞬时排行榜更耐用。闭源服务不提供可验证的完整权重和训练架构；有权重也不代表允许商用或再分发。
+                </p>
+              </div>
+            </div>
+            <p>
+              以下资料核对到
+              <strong>2026 年 9 月 26 日</strong>。不要把“参数总量”当作 MoE 每
+              token 激活量，也不要把“开放权重”当作“开放训练数据”。
+            </p>
+          </section>
+          <section
+            class="chapter"
+            id="checkpoint-inspector"
+            data-group="语言模型结构"
+            data-title="实验 · Checkpoint 结构检查"
+          >
+            <div class="eyebrow">实验专题 / 可复现性</div>
+            <h2>结构核验：从 checkpoint 确认真实模型</h2>
+            <p class="lead">
+              <strong>前置条件：</strong>读者已经学完
+              Token、Embedding、Attention、RoPE、RMSNorm、MLP、SwiGLU 和完整
+              Transformer Block。
+            </p>
+            <p>
+              <strong>本章任务：</strong>使用
+              <code>config.json</code>、<code>state_dict</code>、<code
+                >named_modules()</code
+              >
+              和源码，确认具体 checkpoint 的真实网络结构、层数、维度、参数名和
+              LoRA 可挂载位置。
+            </p>
+            <p>
+              先学习通用结构，再用 checkpoint
+              核验具体模型，最后绘制该模型的实际结构图。不要根据模型名字猜层数。这个脚本只读取
+              Hugging Face
+              配置，不加载权重，适合在下载大文件前确认架构字段；再用结构章节的
+              <code>named_modules()</code> 代码查看真实模块名。
+            </p>
+            <div class="code-block">
+              <span class="code-label">Shell · 只读 config.json</span
+              ><button class="copy" type="button">复制</button>
+              <pre><code>pip install transformers
+python examples/inspect_checkpoint.py Qwen/Qwen3-0.6B
+python examples/inspect_checkpoint.py meta-llama/Llama-3.1-8B --revision MAIN_REVISION</code></pre>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>输出字段</th>
+                    <th>要回答的问题</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>hidden_size / num_hidden_layers</td>
+                    <td>残差流宽度是多少？有多少个 decoder block？</td>
+                  </tr>
+                  <tr>
+                    <td>num_attention_heads / num_key_value_heads</td>
+                    <td>是 MHA、GQA 还是 MQA？KV cache 如何估算？</td>
+                  </tr>
+                  <tr>
+                    <td>intermediate_size / hidden_act</td>
+                    <td>MLP 宽度和激活函数是什么？是否符合 SwiGLU 结构？</td>
+                  </tr>
+                  <tr>
+                    <td>rope_theta / rope_scaling</td>
+                    <td>位置编码策略和上下文扩展配置是什么？</td>
+                  </tr>
+                  <tr>
+                    <td>num_local_experts / num_experts_per_tok</td>
+                    <td>是否 MoE？每 token 激活多少专家？</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              脚本会打印通用字段；模型特有字段仍要回到配置和源码解释。把输出与模型
+              revision、依赖版本、量化方式和训练配置一起归档，才算一个可复现的结构记录。
+            </p>
+          </section>
+          <section
+            class="chapter"
+            id="memory"
+            data-group="部署与并行"
+            data-title="01 · 先算资源账"
+          >
+            <div class="eyebrow">01 / 部署与并行</div>
+            <h2>先算资源账，再挑模型</h2>
+            <p class="lead">
+              显存不是只装权重：KV
+              cache、激活、临时缓冲、框架开销和训练状态会争同一块空间。首先分清“容量问题”和“吞吐问题”。
+            </p>
+            <h3>推理的五项账</h3>
+            <p>
+              <strong>权重下界</strong>约为参数量 × 每参数位数 ÷
+              8；真实占用还包括量化分组 scale/zero-point、未量化层和对齐。10B
+              参数的 4-bit 裸权重约 5 GB（十进制），绝不意味着 6 GB
+              显卡一定跑得动。<strong>KV cache</strong> 对标准 decoder 的近似为
+              2 × 层数 × KV heads × head dim × 当前缓存 token 数 × batch ×
+              每元素字节；GQA/MQA 减少 KV heads。并发、长上下文会把它推高。
+            </p>
+            <div class="diagram">
+              <div class="flow">
+                <div class="node">模型权重<br />静态</div>
+                <b class="arrow">+</b>
+                <div class="node">KV cache<br />随 token / 并发增长</div>
+                <b class="arrow">+</b>
+                <div class="node alt">
+                  激活与临时缓冲<br />随批量 / 实现变化
+                </div>
+                <b class="arrow">+</b>
+                <div class="node alt">运行时余量<br />碎片与 CUDA</div>
+              </div>
+              <figcaption>
+                图 1 ·
+                推理显存构成。输入长度、并发和实现决定后面三项，不能只看模型文件大小。
+              </figcaption>
+            </div>
+            <p>
+              训练时还需梯度、优化器状态与保存的激活。以常见混合精度 Adam
+              全参数训练为例，经常用
+              <strong>约 12—20+ bytes/参数</strong>做粗估（参数副本、梯度、Adam
+              一二阶矩与实现差异），再加激活；不能把推理 4-bit
+              文件大小直接乘一倍当训练预算。LoRA
+              只减少可训练参数的梯度/优化器，不会让基座、激活、KV 自动消失。
+            </p>
+            <div class="calc" id="calculator">
+              <h3>权重容量估算器</h3>
+              <p>仅估权重裸容量与规划余量；不推断速度，也不替代模型卡。</p>
+              <div class="fields">
+                <label
+                  >参数总量（B）<input
+                    id="params"
+                    type="number"
+                    min="0.1"
+                    max="2000"
+                    step="0.1"
+                    value="8" /></label
+                ><label
+                  >权重位宽<select id="bits">
+                    <option value="16">BF16 / FP16 · 16 bit</option>
+                    <option value="8">INT8 / FP8 · 8 bit</option>
+                    <option value="4" selected>INT4 · 4 bit</option>
+                    <option value="2">INT2 · 2 bit</option>
+                  </select></label
+                ><label
+                  >规划余量（倍）<input
+                    id="headroom"
+                    type="number"
+                    min="1"
+                    max="4"
+                    step="0.1"
+                    value="1.4"
+                /></label>
+              </div>
+              <div class="calc-output" id="calcOutput" aria-live="polite"></div>
+            </div>
+            <h3>按硬件类别决策</h3>
+            <p>
+              这张表先回答“当前硬件能稳定跑什么”，再回答“应该选哪种模型格式”。判断顺序是：先看权重和运行时余量能否放下，再看上下文、并发或视频帧带来的动态显存，最后用实际吞吐和延迟验证方案，而不是只按显卡名称选模型。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>环境</th>
+                    <th>优先方案</th>
+                    <th>主要约束与验证</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>CPU / 统一内存</td>
+                    <td>GGUF + llama.cpp；先小模型，再试部分 GPU offload</td>
+                    <td>
+                      内存带宽通常限制 tokens/s；确认真实 RAM、上下文和 swap
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>单张消费卡 8—16 GB</td>
+                    <td>
+                      小/中型 4-bit 推理；图像 LoRA 用梯度检查点与低分辨率
+                    </td>
+                    <td>多模态 encoder、长上下文和视频帧会额外占用</td>
+                  </tr>
+                  <tr>
+                    <td>单张 24—48 GB</td>
+                    <td>BF16 小模型或 4-bit 中型模型；QLoRA、短片段视频推理</td>
+                    <td>优先测峰值显存与吞吐；不要照搬 80 GB 卡参数</td>
+                  </tr>
+                  <tr>
+                    <td>多张 PCIe 卡</td>
+                    <td>
+                      能复制就数据并行；模型放不下再分层/流水线；TP 需测通信
+                    </td>
+                    <td>PCIe、NUMA、跨机网卡可能抵消算力收益</td>
+                  </tr>
+                  <tr>
+                    <td>NVLink/NVSwitch / 高速网络集群</td>
+                    <td>TP × PP × DP / EP 组合；FSDP/ZeRO 分片训练</td>
+                    <td>按节点拓扑放通信密集的 TP，跨节点放 PP/DP 并实测</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="callout">
+              <strong>先测基线：</strong
+              >固定模型修订、精度、提示长度、生成长度、batch、并发与随机种子；记录首
+              token 延迟、输出
+              token/s、总吞吐、峰值显存、质量任务集。只比“tokens/s”会误导。
+            </div>
+            <p>
+              资料：<a
+                href="https://docs.vllm.ai/en/latest/design/paged_attention/"
+                target="_blank"
+                rel="noopener"
+                >vLLM PagedAttention</a
+              >
+              ·
+              <a
+                href="https://github.com/ggml-org/llama.cpp"
+                target="_blank"
+                rel="noopener"
+                >llama.cpp</a
+              >
+              ·
+              <a
+                href="https://huggingface.co/docs/transformers/main/en/llm_tutorial_optimization"
+                target="_blank"
+                rel="noopener"
+                >Transformers 推理优化</a
+              >
+            </p>
+          </section>
+          <section
+            class="chapter"
+            id="quant"
+            data-group="部署与并行"
+            data-title="02 · 量化机制与选择"
+          >
+            <div class="eyebrow">02 / 部署与并行</div>
+            <h2>量化：压缩什么，牺牲什么</h2>
+            <p class="lead">
+              量化把连续数值映射到有限整数/浮点码本。它先解决容量与带宽；速度和质量收益须由硬件内核、模型和任务实测。
+            </p>
+            <h3>从线性映射开始</h3>
+            <p>
+              对一组权重可写
+              <code>q = clip(round(x / s) + z, qmin, qmax)</code>，反量化
+              <code>x_hat = s(q - z)</code>。对称量化通常
+              <code>z=0</code>；per-channel/per-group
+              比全张量共享尺度更能照顾离群值，却要保存更多元数据。<strong
+                >W4A16</strong
+              >
+              是权重 4-bit、激活 16-bit；<strong>W8A8</strong> 两者都
+              8-bit，硬件支持时更可能有完整低精度 GEMM。KV cache
+              精度是另一个独立旋钮。
+            </p>
+            <div class="diagram">
+              <div class="flow">
+                <div class="node">浮点权重<br />分组观察范围</div>
+                <b class="arrow">→</b>
+                <div class="node">scale / zero-point<br />或码本</div>
+                <b class="arrow">→</b>
+                <div class="node alt">低比特权重<br />存储与搬运</div>
+                <b class="arrow">→</b>
+                <div class="node">推理内核<br />反量化 / 低精度乘法</div>
+              </div>
+              <figcaption>
+                图 2 · W4A16 的一条典型路径。低比特文件不保证计算全程都是
+                4-bit。
+              </figcaption>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>路线</th>
+                    <th>核心方法</th>
+                    <th>适用情形 / 注意点</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>bitsandbytes NF4</td>
+                    <td>分块 4-bit 非均匀码本，可双重量化；QLoRA 冻结基座</td>
+                    <td>单卡微调入口；训练的是适配器，不是 4-bit 基座本体</td>
+                  </tr>
+                  <tr>
+                    <td>GPTQ</td>
+                    <td>校准样本 + 近似二阶信息，逐层补偿量化误差</td>
+                    <td>离线 PTQ；看具体架构、kernel 与 calibration 分布</td>
+                  </tr>
+                  <tr>
+                    <td>AWQ</td>
+                    <td>利用激活统计保护显著权重通道</td>
+                    <td>W4 推理常见；小样本校准，不等于任意任务无损</td>
+                  </tr>
+                  <tr>
+                    <td>GGUF / llama.cpp</td>
+                    <td>文件容器 + 多种块量化类型（如 K/IQ 系列）</td>
+                    <td>CPU/混合 offload 便捷；GGUF 是格式，不是一种算法</td>
+                  </tr>
+                  <tr>
+                    <td>FP8 / INT8</td>
+                    <td>硬件支持的 8-bit 数值与张量核路径</td>
+                    <td>服务器吞吐有优势；量化方案和卡代际影响显著</td>
+                  </tr>
+                  <tr>
+                    <td>FP4 / NVFP4 / MXFP4</td>
+                    <td>特定硬件与块尺度约定的 4-bit 浮点</td>
+                    <td>不是任何显卡都支持相同 kernel；须核对运行时</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <h3>可核对的量化 checkpoint 示例</h3>
+            <p>
+              量化格式、量化算法和具体 checkpoint 是三个不同概念。下面的例子用于练习如何从仓库文件名、README 和运行时加载方式确认：它到底压缩了什么、由谁发布、能否被当前推理后端直接使用。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>具体仓库</th>
+                    <th>格式与发布方</th>
+                    <th>怎么用它判断</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>
+                      <a
+                        href="https://huggingface.co/Qwen/Qwen3-0.6B-GGUF"
+                        target="_blank"
+                        rel="noopener"
+                        >Qwen3-0.6B-GGUF</a
+                      >
+                    </td>
+                    <td>Qwen 官方 GGUF，多种文件量化等级</td>
+                    <td>
+                      检查具体 qtype、文件大小、chat template 与 llama.cpp 支持
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <a
+                        href="https://huggingface.co/google/gemma-3-4b-it-qat-q4_0-gguf"
+                        target="_blank"
+                        rel="noopener"
+                        >Gemma 3 4B QAT</a
+                      >
+                    </td>
+                    <td>Google 官方 QAT Q4_0 GGUF</td>
+                    <td>QAT 是训练时模拟量化，不等于对 BF16 做普通 PTQ</td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <a
+                        href="https://huggingface.co/openai/gpt-oss-20b"
+                        target="_blank"
+                        rel="noopener"
+                        >gpt-oss-20b</a
+                      >
+                    </td>
+                    <td>OpenAI 官方 MXFP4 checkpoint</td>
+                    <td>
+                      确认支持 MXFP4 的硬件与运行时；MoE 总参数并非每 token
+                      激活量
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <a
+                        href="https://huggingface.co/deepseek-ai/DeepSeek-V3-0324"
+                        target="_blank"
+                        rel="noopener"
+                        >DeepSeek-V3-0324</a
+                      >
+                    </td>
+                    <td>DeepSeek 官方 FP8 权重</td>
+                    <td>大型 MoE 需规划总存储、专家路由与多卡互联</td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <a
+                        href="https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E-Instruct"
+                        target="_blank"
+                        rel="noopener"
+                        >Llama 4 Scout</a
+                      >
+                    </td>
+                    <td>Meta 原始仓库；GGUF 多为社区转换</td>
+                    <td>先核对原模型许可，再逐转换仓库验证量化者与质量</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <h3>版本与质量的实际判断</h3>
+            <p>
+              Qwen、Llama、Gemma、Mistral、DeepSeek、gpt-oss
+              等家族中，部分官方或社区发布 BF16/FP8/GGUF/GPTQ/AWQ
+              变体；<strong>“有量化版”是具体模型修订、仓库和转换工具的属性</strong>，并非整个家族的永久属性。优先官方模型卡，核对量化者、基座
+              commit、tokenizer/chat
+              template、许可证与推理框架。社区转换须自行复测。
+            </p>
+            <p>
+              质量通常随比特数降低而更脆弱，但损失不是固定百分比：事实问答、代码、数学、长上下文、工具调用和多语言可能出现不同退化。相同名义
+              4-bit 的 group size、校准集和敏感层保留方式也不同。做
+              <strong>FP16/BF16 基线 → 8-bit → 4-bit</strong>
+              配对评测，比较准确率/通过率、拒答与格式遵循，且记录吞吐和显存；不要只看通用榜单。
+            </p>
+            <div class="compare">
+              <div class="panel accent">
+                <h4>推理优先</h4>
+                <p>
+                  先用受支持的 GGUF 或 AWQ/GPTQ/FP8 检查模型适配，再测
+                  kernel。低比特主要省权重带宽；长上下文仍受 KV 限制。
+                </p>
+              </div>
+              <div class="panel warn">
+                <h4>微调优先</h4>
+                <p>
+                  QLoRA 常用 NF4 基座 + BF16 计算 + LoRA；多数 PTQ checkpoint
+                  不能直接拿来继续全参数训练。
+                </p>
+              </div>
+            </div>
+            <p>
+              资料：<a
+                href="https://arxiv.org/abs/2305.14314"
+                target="_blank"
+                rel="noopener"
+                >QLoRA 论文</a
+              >
+              ·
+              <a
+                href="https://arxiv.org/abs/2210.17323"
+                target="_blank"
+                rel="noopener"
+                >GPTQ 论文</a
+              >
+              ·
+              <a
+                href="https://arxiv.org/abs/2306.00978"
+                target="_blank"
+                rel="noopener"
+                >AWQ 论文</a
+              >
+              ·
+              <a
+                href="https://huggingface.co/docs/transformers/main/en/quantization/overview"
+                target="_blank"
+                rel="noopener"
+                >Transformers 量化文档</a
+              >
+            </p>
+          </section>
+          <section
+            class="chapter"
+            id="serve"
+            data-group="部署与并行"
+            data-title="03 · 单机部署与服务"
+          >
+            <div class="eyebrow">03 / 部署与并行</div>
+            <h2>从本地试跑到推理服务</h2>
+            <p class="lead">
+              先选模型与许可证，再选格式、运行时和评测。桌面探索与高并发服务不是同一套最优栈。
+            </p>
+            <h3>选择一条运行路径</h3>
+            <p>
+              运行时选择要和目标绑定：桌面试跑重视安装简单和单请求可复现，服务部署重视 batching、KV cache 和吞吐，研究验收则要先保留原始 Transformers 路径。先确定任务，再按模型支持矩阵选择后端。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>路径</th>
+                    <th>适合</th>
+                    <th>你需要核对</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>llama.cpp / GGUF</td>
+                    <td>CPU、笔记本、单机混合 offload；快速交互</td>
+                    <td>模型架构支持、GGUF 类型、GPU 后端、chat template</td>
+                  </tr>
+                  <tr>
+                    <td>Transformers</td>
+                    <td>研究与模型原始实现；微调前验收</td>
+                    <td>trust_remote_code 风险、dtype/device_map、依赖版本</td>
+                  </tr>
+                  <tr>
+                    <td>vLLM</td>
+                    <td>OpenAI 兼容 API、连续批处理、高并发与多卡</td>
+                    <td>架构/量化支持表、GPU 内存利用率、上下文上限</td>
+                  </tr>
+                  <tr>
+                    <td>TensorRT-LLM / SGLang</td>
+                    <td>硬件定向优化或复杂高吞吐服务</td>
+                    <td>内核、编译与平台矩阵；不要假设任意模型即插即用</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="code-block">
+              <span class="code-label">Shell · vLLM 的单卡 BF16 示例</span
+              ><button class="copy" type="button">复制</button>
+              <pre><code>python -m venv .venv
+# Linux/macOS: source .venv/bin/activate
+pip install vllm
+vllm serve Qwen/Qwen3-0.6B --dtype bfloat16 --max-model-len 4096</code></pre>
+            </div>
+            <p>
+              选择 0.6B 是为了验证流程，不代表
+              BF16/驱动在所有消费卡上都可用；Windows 原生支持、CUDA/ROCm
+              与安装细节请按官方矩阵确认，必要时用
+              WSL2/Linux。不要把服务绑定公网而没有鉴权。访问兼容接口可用下例：
+            </p>
+            <div class="code-block">
+              <span class="code-label">Shell · 本机测试</span
+              ><button class="copy" type="button">复制</button>
+              <pre><code>curl http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"Qwen/Qwen3-0.6B","messages":[{"role":"user","content":"用一句话解释KV cache"}],"max_tokens":80}'</code></pre>
+            </div>
+            <p>
+              用 GGUF 路径时，下载与原模型相匹配的文件，执行
+              <code>llama-server -m model.gguf -ngl 99 -c 4096</code>；<code
+                >-ngl</code
+              >
+              是尝试把层卸载到 GPU，实际分配以日志为准。加载失败先核对
+              RAM/VRAM、文件完整性和模板，再减少上下文或并发。
+            </p>
+            <div class="callout">
+              <strong>安全与复现：</strong>固定模型
+              revision/哈希和依赖版本；不要执行来源不明的模型代码；记录许可证、数据处理约束、服务监听地址、日志保留策略与鉴权。
+            </div>
+            <p>
+              资料：<a
+                href="https://docs.vllm.ai/en/latest/getting_started/quickstart/"
+                target="_blank"
+                rel="noopener"
+                >vLLM 快速开始</a
+              >
+              ·
+              <a
+                href="https://github.com/ggml-org/llama.cpp"
+                target="_blank"
+                rel="noopener"
+                >llama.cpp 官方仓库</a
+              >
+              ·
+              <a
+                href="https://huggingface.co/docs/transformers/main/en/llm_tutorial"
+                target="_blank"
+                rel="noopener"
+                >Transformers LLM 指南</a
+              >
+            </p>
+          </section>
+          <section
+            class="chapter"
+            id="parallel"
+            data-group="部署与并行"
+            data-title="04 · 多卡推理与加速"
+          >
+            <div class="eyebrow">04 / 部署与并行</div>
+            <h2>多卡推理：复制、切分与通信</h2>
+            <p class="lead">
+              多一张卡先问：模型是否放得下？要降低单请求延迟，还是提高总吞吐？不同答案对应不同并行维度。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>方法</th>
+                    <th>切什么</th>
+                    <th>何时优先 / 代价</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>DP / 副本</td>
+                    <td>请求分给每卡完整模型</td>
+                    <td>模型单卡能放下、要扩吞吐；权重重复，需负载均衡</td>
+                  </tr>
+                  <tr>
+                    <td>TP 张量并行</td>
+                    <td>层内矩阵和 attention heads</td>
+                    <td>单层太大或追求低延迟；每层通信频繁，优先高速互联</td>
+                  </tr>
+                  <tr>
+                    <td>PP 流水线并行</td>
+                    <td>不同层放不同卡/节点</td>
+                    <td>模型放不下、互联较慢；microbatch 不足时有气泡</td>
+                  </tr>
+                  <tr>
+                    <td>EP 专家并行</td>
+                    <td>MoE 专家分布在卡上</td>
+                    <td>大 MoE；路由不均与 all-to-all 网络是瓶颈</td>
+                  </tr>
+                  <tr>
+                    <td>Prefill/Decode 分离</td>
+                    <td>计算密集的预填充与带宽敏感的解码</td>
+                    <td>复杂服务；要转移 KV 并协调队列</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="diagram">
+              <div class="flow">
+                <div class="node">
+                  两卡 DP<br />模型 A | 模型 A<br />不同请求
+                </div>
+                <b class="arrow">≠</b>
+                <div class="node alt">
+                  两卡 TP<br />A 的半层 | 半层<br />同一请求通信
+                </div>
+                <b class="arrow">≠</b>
+                <div class="node">
+                  两卡 PP<br />前半层 | 后半层<br />同一请求接力
+                </div>
+              </div>
+              <figcaption>
+                图 3 · 三种“用两卡”在存储、延迟与吞吐上的意义完全不同。
+              </figcaption>
+            </div>
+            <div class="code-block">
+              <span class="code-label"
+                >Shell · vLLM 单机两卡 TP，模型 ID 仅作示意</span
+              ><button class="copy" type="button">复制</button>
+              <pre><code>CUDA_VISIBLE_DEVICES=0,1 vllm serve MODEL_ID \
+  --tensor-parallel-size 2 --max-model-len 4096</code></pre>
+            </div>
+            <p>
+              先在单卡测基线，再测 TP=2、PP=2、两副本
+              DP=2，保持总请求量和输入输出长度相同。若 PCIe
+              卡间通信慢、模型单卡可放下且目标是总吞吐，<strong
+                >DP 往往比 TP 更直接</strong
+              >；若模型跨节点，常用节点内 TP、节点间
+              PP，具体以拓扑和框架支持为准。<code>CUDA_VISIBLE_DEVICES</code>
+              只限制可见卡，不会自行并行。
+            </p>
+            <h3>除了加卡还能做什么</h3>
+            <p>
+              连续批处理减少空闲；PagedAttention 管理 KV 碎片；FlashAttention
+              类内核优化 attention IO；prefix caching
+              复用相同前缀；投机解码在候选模型准确时减少串行步数；量化 KV
+              或限制上下文增加并发余量。逐项 A/B 测试，改变 batch
+              往往会改变延迟/吞吐权衡。
+            </p>
+            <p>
+              资料：<a
+                href="https://github.com/vllm-project/vllm/blob/main/docs/serving/parallelism_scaling.md"
+                target="_blank"
+                rel="noopener"
+                >vLLM 并行扩展</a
+              >
+              ·
+              <a
+                href="https://github.com/vllm-project/vllm/blob/main/docs/serving/expert_parallel_deployment.md"
+                target="_blank"
+                rel="noopener"
+                >vLLM EP</a
+              >
+              ·
+              <a
+                href="https://arxiv.org/abs/2309.06180"
+                target="_blank"
+                rel="noopener"
+                >PagedAttention 论文</a
+              >
+              ·
+              <a
+                href="https://arxiv.org/abs/2205.14135"
+                target="_blank"
+                rel="noopener"
+                >FlashAttention 论文</a
+              >
+            </p>
+          </section>
+          <section
+            class="chapter"
+            id="distributed-train"
+            data-group="部署与并行"
+            data-title="05 · 多卡训练的分片"
+          >
+            <div class="eyebrow">05 / 部署与并行</div>
+            <h2>训练多卡：梯度、状态与模型分片</h2>
+            <p class="lead">
+              推理 TP
+              并不是训练并行的全部。训练要同时安排参数、梯度、优化器状态与激活，还要处理同步语义。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>方案</th>
+                    <th>每卡保存</th>
+                    <th>典型通信</th>
+                    <th>适合</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>DDP</td>
+                    <td>完整模型、梯度、优化器；各卡不同数据</td>
+                    <td>梯度 all-reduce</td>
+                    <td>单卡放得下、追求吞吐</td>
+                  </tr>
+                  <tr>
+                    <td>ZeRO-1/2/3</td>
+                    <td>依次切优化器 / 梯度 / 参数</td>
+                    <td>reduce-scatter / all-gather 随阶段增加</td>
+                    <td>容量紧张，权衡通信</td>
+                  </tr>
+                  <tr>
+                    <td>FSDP2</td>
+                    <td>参数、梯度、优化器分片；模块前 all-gather</td>
+                    <td>层级 all-gather 与 reduce-scatter</td>
+                    <td>超单卡容量的 dense 训练</td>
+                  </tr>
+                  <tr>
+                    <td>TP + PP</td>
+                    <td>层内与层间切分</td>
+                    <td>all-reduce、激活点对点</td>
+                    <td>超大模型、高速互联集群</td>
+                  </tr>
+                  <tr>
+                    <td>SP / CP</td>
+                    <td>序列或上下文维切分</td>
+                    <td>attention/KV 通信</td>
+                    <td>长序列激活/KV 瓶颈</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              全局 batch = microbatch × 梯度累积步数 × DP
+              副本数。梯度累积降低峰值激活，但延长一步耗时；激活重计算用计算换显存；混合精度通常用
+              BF16（硬件支持时），注意 optimizer 与归一化稳定性。FSDP/ZeRO 的
+              shard 不会神奇消除 forward 的层内瞬时 all-gather。
+            </p>
+            <div class="diagram">
+              <div class="flow">
+                <div class="node">microbatch<br />每卡前/反传</div>
+                <b class="arrow">→</b>
+                <div class="node">梯度累积<br />多次 microstep</div>
+                <b class="arrow">→</b>
+                <div class="node alt">同步 / 归约<br />DDP 或分片</div>
+                <b class="arrow">→</b>
+                <div class="node">优化器更新<br />一次 global step</div>
+              </div>
+              <figcaption>
+                图 4 · 梯度累积改变同步频率，不等于把单个长样本的激活拆开。
+              </figcaption>
+            </div>
+            <div class="code-block">
+              <span class="code-label">Shell · torchrun 的 DDP 启动骨架</span
+              ><button class="copy" type="button">复制</button>
+              <pre><code>torchrun --standalone --nproc_per_node=2 train.py \
+  --per_device_train_batch_size 1 --gradient_accumulation_steps 8</code></pre>
+            </div>
+            <div class="code-block">
+              <span class="code-label"
+                >Shell · 两卡复制式 LoRA，完整脚本在 examples/</span
+              ><button class="copy" type="button">复制</button>
+              <pre><code>CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc_per_node=2 \
+  examples/train_ddp_lora.py --data examples/tickets.jsonl \
+  --output runs/ticket-ddp-lora</code></pre>
+            </div>
+            <div class="compare">
+              <div class="panel accent">
+                <h4>2 × 24 GB PCIe</h4>
+                <p>
+                  单卡能放下 0.6B：先 DDP 增吞吐；中型模型可做每卡独立 QLoRA
+                  实验；只有模型超容量才考虑分片。TP=2 是否更快需实测。
+                </p>
+              </div>
+              <div class="panel warn">
+                <h4>2 节点 × 8 张高速互联卡</h4>
+                <p>
+                  节点内优先通信密集的 TP/EP，节点间按模型容量与网络选择
+                  PP/DP；训练用 FSDP/ZeRO 或 TP×PP×DP，checkpoint
+                  必须记录分片拓扑。
+                </p>
+              </div>
+            </div>
+            <p>
+              上面的 <code>train.py</code> 仅是启动语义示意。真正可运行的
+              <a href="examples/train_ddp_lora.py">双卡 LoRA 脚本</a> 使用
+              Trainer/Accelerate 由每个 rank
+              保存完整基座副本、同步适配器梯度：有效 batch = 1 × 4 × 2 =
+              8。它解决吞吐，不解决模型单卡装不下；容量不足改用 FSDP/ZeRO 或
+              QLoRA，并核对框架组合支持。先验证 1 GPU 的 loss 曲线和 checkpoint
+              恢复，再验证 2 GPU 的有效 batch 与随机种子；多节点还要校验
+              NCCL、网卡、容器映射和故障恢复。<strong>任务分配</strong>：多实验/多种子直接分卡独立跑常常比强行把一个小模型跨卡切开更高效。
+            </p>
+            <p>
+              资料：<a
+                href="https://docs.pytorch.org/docs/stable/distributed.fsdp.fully_shard.html"
+                target="_blank"
+                rel="noopener"
+                >PyTorch FSDP2</a
+              >
+              ·
+              <a
+                href="https://docs.pytorch.org/docs/stable/distributed.tensor.parallel.html"
+                target="_blank"
+                rel="noopener"
+                >PyTorch TP</a
+              >
+              ·
+              <a
+                href="https://www.deepspeed.ai/tutorials/zero/"
+                target="_blank"
+                rel="noopener"
+                >DeepSpeed ZeRO</a
+              >
+              ·
+              <a
+                href="https://huggingface.co/docs/accelerate/main/en/usage_guides/fsdp"
+                target="_blank"
+                rel="noopener"
+                >Accelerate FSDP</a
+              >
+            </p>
+          </section>
+          <section
+            class="chapter"
+            id="parallel-lab"
+            data-group="部署与并行"
+            data-title="实验 · 多卡通信与拓扑验收"
+          >
+            <div class="eyebrow">实验专题 / 多卡</div>
+            <h2>多卡不是魔法：通信原语与拓扑验收</h2>
+            <p class="lead">
+              多卡性能取决于计算、通信和同步等待的比例。先理解通信原语，再用硬件拓扑和
+              profiler 证实瓶颈，不要把 GPU 数量直接等同于加速比。
+            </p>
+            <p class="detail-entry">
+              <a href="parallel.html">打开《并行与调度详细页》</a
+              ><span
+                >DP / TP / PP / EP / FSDP / ZeRO / Prefill / Decode
+                的设备分工、输入输出、通信和命令示例</span
+              >
+            </p>
+            <div class="arch-diagram">
+              <div class="arch-title">训练并行中最常见的通信</div>
+              <div class="arch-grid">
+                <div class="arch-card">
+                  <h4>All-Reduce · DDP</h4>
+                  <p>
+                    每张卡有完整模型和本地梯度；反向后把所有 rank
+                    的梯度求和/平均，再让每张卡得到相同结果。
+                  </p>
+                  <div class="mini-flow">
+                    <span>G0</span><b>↔</b><span>G1</span><b>↔</b><span>G2</span
+                    ><small>结果相同</small>
+                  </div>
+                </div>
+                <div class="arch-card">
+                  <h4>All-Gather · FSDP / TP</h4>
+                  <p>
+                    每张卡只保存参数分片，需要计算某层时临时收集完整或必要分片；用显存换通信。
+                  </p>
+                  <div class="mini-flow">
+                    <span>P0</span><b>+</b><span>P1</span><b>+</b><span>P2</span
+                    ><small>临时重组 W</small>
+                  </div>
+                </div>
+                <div class="arch-card">
+                  <h4>Reduce-Scatter · 分片梯度</h4>
+                  <p>
+                    先做全局归约，再把结果切片分给各
+                    rank；每张卡只保留自己的梯度和优化器状态。
+                  </p>
+                  <div class="mini-flow">
+                    <span>G all</span><b>→</b><span>G0 | G1 | G2</span>
+                  </div>
+                </div>
+                <div class="arch-card">
+                  <h4>All-to-All · MoE</h4>
+                  <p>
+                    Router 把 token 发给拥有目标 expert 的卡，expert
+                    计算后再发回原 rank；专家负载不均会放大尾延迟。
+                  </p>
+                  <div class="mini-flow">
+                    <span>tokens</span><b>⇄</b><span>experts</span>
+                  </div>
+                </div>
+              </div>
+              <figcaption>
+                图 S6 · DDP、FSDP、TP、MoE
+                使用的通信语义不同；选择并行维度就是选择通信发生的位置。
+              </figcaption>
+            </div>
+            <h3>拓扑决定并行组合</h3>
+            <p>
+              并行方案不是把卡数填进参数就结束了。通信最密集的维度必须放在链路最快的位置：节点内高速互联适合 TP/EP，跨节点更常把 PP/DP 放在外层；PCIe、NUMA 和异构显卡会把同步等待放大，必须通过拓扑命令和 profiler 验证。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>硬件拓扑</th>
+                    <th>通信密集维度</th>
+                    <th>建议验证</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>单机 NVLink / NVSwitch</td>
+                    <td>TP、EP、FSDP 的 all-reduce/all-gather</td>
+                    <td>
+                      <code>nvidia-smi topo -m</code>；测 P2P 带宽，确认进程绑定
+                      GPU
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>单机 PCIe 多卡</td>
+                    <td>TP 可能被频繁同步拖慢</td>
+                    <td>用 DP 副本作对照；看 NUMA、PCIe switch 和 H2D 拷贝</td>
+                  </tr>
+                  <tr>
+                    <td>多机 InfiniBand / RoCE</td>
+                    <td>跨节点 PP/DP/EP；跨节点 TP 风险更高</td>
+                    <td>NCCL 网卡选择、GDR、MTU、节点间 all-reduce 延迟</td>
+                  </tr>
+                  <tr>
+                    <td>异构显卡</td>
+                    <td>最慢卡和最小显存决定同步步长</td>
+                    <td>避免在同步组混用不同算力；独立实验通常更合理</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <h3>把加速变成可比较的实验</h3>
+            <ol>
+              <li>
+                固定模型 revision、精度、输入长度、输出长度、global batch、seed
+                和 warmup；先跑单卡基线。
+              </li>
+              <li>
+                依次测试 DDP、TP、FSDP/ZeRO，记录 step
+                time、tokens/s、P50/P95、峰值显存、通信时间和 GPU 利用率。
+              </li>
+              <li>
+                用相同总 token 数比较，而不是只比较某次短跑的瞬时速度；报告
+                scaling efficiency = 单卡吞吐 ÷（卡数 × 多卡吞吐）。
+              </li>
+              <li>
+                看通信与计算是否重叠；若通信等待占比高，减少跨卡同步或改变并行维度，不是继续加卡。
+              </li>
+            </ol>
+            <div class="code-block">
+              <span class="code-label">Shell · 拓扑和 NCCL 基线</span
+              ><button class="copy" type="button">复制</button>
+              <pre><code>nvidia-smi topo -m
+nvidia-smi -L
+
+# nccl-tests 按官方 README 编译后
+mpirun -np 2 -H hostA:1,hostB:1 \
+  ./build/all_reduce_perf -b 8 -e 4G -f 2 -g 1
+
+NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=INIT,GRAPH \
+torchrun --standalone --nproc_per_node=2 train.py</code></pre>
+            </div>
+            <p>
+              Profiler 重点看
+              <code>ncclAllReduce</code
+              >、<code>ncclAllGather</code>、<code>ncclReduceScatter</code>、<code
+                >ncclAllToAll</code
+              >
+              和 GPU idle gap。遇到多卡更慢，先排除数据加载、CPU tokenizer、频繁
+              checkpoint、错误 GPU 映射和 batch 太小。
+            </p>
+            <p>
+              资料：<a
+                href="https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/overview.html"
+                target="_blank"
+                rel="noopener"
+                >NCCL 原语</a
+              >
+              ·
+              <a
+                href="https://github.com/NVIDIA/nccl-tests"
+                target="_blank"
+                rel="noopener"
+                >nccl-tests</a
+              >
+              ·
+              <a
+                href="https://docs.pytorch.org/tutorials/intermediate/ddp_tutorial.html"
+                target="_blank"
+                rel="noopener"
+                >PyTorch DDP</a
+              >
+              ·
+              <a
+                href="https://docs.pytorch.org/tutorials/intermediate/FSDP_tutorial.html"
+                target="_blank"
+                rel="noopener"
+                >PyTorch FSDP</a
+              >
+            </p>
+          </section>
+          <section
+            class="chapter"
+            id="llm-anatomy"
+            data-group="语言模型结构"
+            data-title="结构 · Decoder LLM 逐层剖面"
+          >
+            <div class="eyebrow">结构专题 A / 语言模型</div>
+            <h2>Decoder-only LLM：每一层到底做了什么</h2>
+            <p class="lead">
+              下面把现代 Llama、Qwen、Mistral、Gemma 等 decoder-only
+              模型抽象成可以逐张量追踪的计算图。具体层数、宽度、词表、归一化和
+              RoPE 参数必须以某个 checkpoint 的
+              <code>config.json</code> 为准；但每个 block
+              的数据路径基本遵循这张图。
+            </p>
+            <div class="arch-diagram">
+              <div class="arch-title">输入到 logits 的完整路径</div>
+              <div class="arch-stack">
+                <div class="arch-row input">
+                  <span class="module-tag">输入</span><b>文本</b
+                  ><span>Tokenizer → token ids [B, S]</span>
+                </div>
+                <div class="arch-arrow">↓</div>
+                <div class="arch-row">
+                  <span class="module-tag">Embedding</span><b>E[token]</b
+                  ><span>[B, S, d_model]</span>
+                </div>
+                <div class="arch-arrow">↓</div>
+                <div class="repeat-box">
+                  <div class="repeat-label">
+                    重复 N 层 Transformer Decoder Block
+                  </div>
+                  <div class="arch-row">
+                    <span class="module-tag norm">RMSNorm</span
+                    ><span>x → x_hat</span><span>无均值/方差参数或按模型配置</span>
+                  </div>
+                  <div class="arch-arrow">↓</div>
+                  <div class="arch-row">
+                    <span class="module-tag attn">Self-Attention</span
+                    ><b>Q/K/V projections</b><span>因果 mask + RoPE</span>
+                  </div>
+                  <div class="arch-arrow">↓</div>
+                  <div class="arch-row">
+                    <span class="module-tag residual">残差 ①</span
+                    ><span>x + Attn(x)</span><span>保留原始流</span>
+                  </div>
+                  <div class="arch-arrow">↓</div>
+                  <div class="arch-row">
+                    <span class="module-tag norm">RMSNorm</span
+                    ><span>再归一化</span><span>Pre-Norm 结构</span>
+                  </div>
+                  <div class="arch-arrow">↓</div>
+                  <div class="arch-row">
+                    <span class="module-tag mlp">SwiGLU MLP</span
+                    ><b>gate × activation(up)</b><span>→ down_proj</span>
+                  </div>
+                  <div class="arch-arrow">↓</div>
+                  <div class="arch-row">
+                    <span class="module-tag residual">残差 ②</span
+                    ><span>x + MLP(x)</span><span>进入下一层</span>
+                  </div>
+                </div>
+                <div class="arch-arrow">↓</div>
+                <div class="arch-row">
+                  <span class="module-tag norm">Final RMSNorm</span
+                  ><span>[B, S, d_model]</span><span>最后归一化</span>
+                </div>
+                <div class="arch-arrow">↓</div>
+                <div class="arch-row output">
+                  <span class="module-tag output">LM Head</span
+                  ><b>hidden × W_vocabᵀ</b><span>logits [B, S, V]</span>
+                </div>
+              </div>
+              <div class="legend">
+                <span><i class="swatch attn"></i>注意力</span
+                ><span><i class="swatch mlp"></i>前馈网络</span
+                ><span><i class="swatch residual"></i>残差路径</span
+                ><span><i class="swatch norm"></i>归一化</span>
+              </div>
+              <figcaption>
+                图 S1 · 一个 token 在每层经过两次子层：注意力负责 token
+                之间的信息交换，MLP 负责逐 token 的非线性变换。
+              </figcaption>
+            </div>
+            <h3>① Self-Attention 的张量级展开</h3>
+            <div class="arch-grid">
+              <div class="arch-card">
+                <h4>投影</h4>
+                <p>
+                  <code>X</code> 为
+                  <code>[B,S,d]</code
+                  >。<code>Q=XWq</code>、<code>K=XWk</code>、<code>V=XWv</code>。普通
+                  MHA 有相同的 head 数；GQA 让 <code>h_kv &lt; h_q</code>，多个
+                  query head 共享一组 K/V；MQA 进一步只有一组 K/V。
+                </p>
+              </div>
+              <div class="arch-card">
+                <h4>位置</h4>
+                <p>
+                  RoPE 只旋转 Q/K
+                  的成对维度，使点积带相对位置信息。它不是把位置向量简单相加；长上下文扩展还涉及频率缩放与训练分布。
+                </p>
+              </div>
+              <div class="arch-card">
+                <h4>因果注意力</h4>
+                <p>
+                  <code>A=softmax((QKᵀ)/√d_head + causal_mask)</code>，再算
+                  <code>O=AV</code>，拼接各 head 后过 <code>Wo</code>。第 i 个
+                  token 不能读取 i 之后的 token。
+                </p>
+              </div>
+              <div class="arch-card">
+                <h4>KV cache</h4>
+                <p>
+                  自回归解码时保存每层已生成位置的 K/V，只为新 token 算
+                  Q；缓存形状近似 <code>[B,h_kv,S,d_head]</code>，所以 GQA/MQA
+                  能直接减少 KV 显存。
+                </p>
+              </div>
+            </div>
+            <div class="tensor-example">
+              <b>一个具体形状例子</b>
+              <p>
+                假设
+                <code>B=1,S=4096,d_model=4096,h_q=32,h_kv=8,d_head=128</code>：Q
+                是 <code>[1,32,4096,128]</code>，K/V 是
+                <code>[1,8,4096,128]</code>；每 4 个 Q head 复用一个 KV
+                head。注意力得分不是永远保存完整的
+                <code>S×S</code> 矩阵，FlashAttention 用分块 IO
+                计算以降低显存峰值。
+              </p>
+            </div>
+            <h3>② SwiGLU MLP：逐个看懂公式里的每个模块</h3>
+            <p>
+              先固定输入和变量。这里 <code>x</code> 是进入 MLP 的残差流，形状为
+              <code>[B,S,d_model]</code>：B 是样本数，S 是 token 数，<code
+                >d_model</code
+              >
+              是每个 token 的通道宽度。所谓“分两支”，不是把
+              <code>x</code> 的最后一维切成两半，而是把<strong>同一个 x</strong>
+              分别送进两套独立的 Linear：一套产生 gate 分支，一套产生 up
+              分支；两支都把最后一维从 <code>d_model</code> 扩到
+              <code>d_ff</code>。
+            </p>
+            <div class="arch-diagram">
+              <div class="arch-title">
+                SwiGLU：同一个 x 复制给两条独立支路，最后逐元素合并
+              </div>
+              <div class="flow wide">
+                <div class="node">输入 x<br />[B,S,d_model]</div>
+                <b class="arrow">↗</b>
+                <div class="node alt">
+                  gate 支路<br />g = gate_proj(x)<br />[B,S,d_ff]
+                </div>
+                <b class="arrow">→</b>
+                <div class="node">a = SiLU(g)<br />[B,S,d_ff]</div>
+                <b class="arrow">↘</b>
+                <div class="node output">h = a ⊙ u<br />[B,S,d_ff]</div>
+                <b class="arrow">→</b>
+                <div class="node output">
+                  y = down_proj(h)<br />[B,S,d_model]
+                </div>
+              </div>
+              <div class="flow wide">
+                <div class="node">同一个 x<br />[B,S,d_model]</div>
+                <b class="arrow">↘</b>
+                <div class="node alt">
+                  up 支路<br />u = up_proj(x)<br />[B,S,d_ff]
+                </div>
+                <b class="arrow">→</b>
+                <div class="node output">
+                  逐元素相乘 ⊙<br />与 a 的相同位置/通道相乘
+                </div>
+              </div>
+              <figcaption>
+                两条支路的输入都是原始 <code>x</code>；gate 支路先经过 SiLU
+                形成调制值 <code>a</code>，up 支路形成内容值
+                <code>u</code>。它们不是先后串联，而是在相同的
+                <code>[B,S,d_ff]</code> 位置上相乘。
+              </figcaption>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>变量</th>
+                    <th>这一步的输入</th>
+                    <th>运算</th>
+                    <th>输出</th>
+                    <th>它表示什么</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>x</code></td>
+                    <td>上一层残差流</td>
+                    <td>进入 MLP</td>
+                    <td><code>[B,S,d_model]</code></td>
+                    <td>每个 token 的原始输入；后面两条支路都从它开始。</td>
+                  </tr>
+                  <tr>
+                    <td><code>g</code></td>
+                    <td><code>x</code>，不是切片后的子张量</td>
+                    <td><code>g = gate_proj(x) = xW_g^T + b_g</code></td>
+                    <td><code>[B,S,d_ff]</code></td>
+                    <td>gate 支路的未激活分数；每个中间通道都有一个值。</td>
+                  </tr>
+                  <tr>
+                    <td><code>a</code></td>
+                    <td><code>g</code></td>
+                    <td><code>a = SiLU(g)</code></td>
+                    <td><code>[B,S,d_ff]</code></td>
+                    <td>门控值；SiLU 改变数值但不改变形状。</td>
+                  </tr>
+                  <tr>
+                    <td><code>u</code></td>
+                    <td>同一个 <code>x</code></td>
+                    <td><code>u = up_proj(x) = xW_u^T + b_u</code></td>
+                    <td><code>[B,S,d_ff]</code></td>
+                    <td>up 支路的内容值；它与 gate 支路使用另一套权重。</td>
+                  </tr>
+                  <tr>
+                    <td><code>h</code></td>
+                    <td><code>a</code> 和 <code>u</code></td>
+                    <td><code>h = a ⊙ u</code></td>
+                    <td><code>[B,S,d_ff]</code></td>
+                    <td>
+                      逐元素相乘：同一个 batch、同一个
+                      token、同一个中间通道相乘；不会混合 token。
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><code>y</code></td>
+                    <td><code>h</code></td>
+                    <td><code>y = down_proj(h) = hW_d^T + b_d</code></td>
+                    <td><code>[B,S,d_model]</code></td>
+                    <td>把中间宽度压回残差宽度，成为 MLP 更新量。</td>
+                  </tr>
+                  <tr>
+                    <td><code>x_out</code></td>
+                    <td>原始 <code>x</code> 和 <code>y</code></td>
+                    <td><code>x_out = x + y</code></td>
+                    <td><code>[B,S,d_model]</code></td>
+                    <td>
+                      Transformer block 的第二次残差相加；这一步在 MLP
+                      投影之后。
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="tensor-example">
+              <b>用具体尺寸读一次</b>
+              <p>
+                若
+                <code>B=2</code
+                >、<code>S=3</code>、<code>d_model=4</code>、<code>d_ff=8</code>，输入是
+                2 个样本、每个 3 个 token、每个 token 4 个数。gate 和 up 两条
+                Linear 各把每个 4 维向量变成 8 维，所以两支均为
+                <code>[2,3,8]</code>；SiLU 与逐元素乘仍为
+                <code>[2,3,8]</code>；down 再将每个 8 维向量映射为 4 维，得到
+                <code>[2,3,4]</code>，最后才能和形状相同的残差输入逐元素相加。
+              </p>
+            </div>
+            <p>
+              <strong>这个 MLP 放在什么位置？</strong>每个 decoder block
+              通常先做 attention 并加回残差，再归一化，然后对每个 token
+              独立运行上面的 MLP，再做第二次残差相加。Attention 混合 token
+              之间的信息；MLP 在一个 token
+              内混合通道、增加非线性表达。模型代码里
+              <code>gate_proj</code>/<code>up_proj</code>/<code>down_proj</code>
+              是参数名，不是特殊数学算子。并非所有模型都用 SwiGLU；有的使用
+              GELU/GEGLU 或 fused kernel，必须按模型实现确认。MoE 则把一份 MLP
+              扩展成多个 expert，并由 router 为 token 选择少数专家。
+            </p>
+            <h3>③ 从配置和源码确认“是哪一种 LLM”</h3>
+            <p>
+              模型名只能给出家族线索，不能告诉你真实的层数、头数、KV heads 或 MLP 宽度。下面按“字段 → 结构 → 工程影响”读取配置，读完后再用 <code>named_modules()</code> 和一次 forward 形状核对，避免把相似名称当成相同架构。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>要查的对象</th>
+                    <th>常见字段/模块名</th>
+                    <th>它决定什么</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>规模</td>
+                    <td>
+                      <code>num_hidden_layers</code
+                      >、<code>hidden_size</code>、<code
+                        >intermediate_size</code
+                      >
+                    </td>
+                    <td>层数、残差宽度、MLP 中间宽度与参数量</td>
+                  </tr>
+                  <tr>
+                    <td>注意力</td>
+                    <td>
+                      <code>num_attention_heads</code
+                      >、<code>num_key_value_heads</code>、<code>head_dim</code>
+                    </td>
+                    <td>MHA/GQA/MQA、Q/K/V 形状与 KV cache</td>
+                  </tr>
+                  <tr>
+                    <td>位置</td>
+                    <td>
+                      <code>rope_theta</code>、rope scaling、position embedding
+                    </td>
+                    <td>RoPE 频率与上下文长度策略</td>
+                  </tr>
+                  <tr>
+                    <td>归一化/激活</td>
+                    <td><code>rms_norm_eps</code>、<code>hidden_act</code></td>
+                    <td>RMSNorm/LayerNorm、SiLU/SwiGLU 等</td>
+                  </tr>
+                  <tr>
+                    <td>词表与输出</td>
+                    <td>
+                      <code>vocab_size</code>、<code>tie_word_embeddings</code>
+                    </td>
+                    <td>输入 embedding 与 LM head 是否共享权重</td>
+                  </tr>
+                  <tr>
+                    <td>MoE</td>
+                    <td>
+                      <code>num_local_experts</code>、<code
+                        >num_experts_per_tok</code
+                      >
+                    </td>
+                    <td>专家数量、每 token 激活数与 all-to-all 通信</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              源码核对路径：Hugging Face Transformers 中看对应的
+              <code>modeling_*.py</code>、<code>configuration_*.py</code> 和
+              <code>model.named_modules()</code>；权重核对用
+              <code>model.state_dict().keys()</code
+              >。不要只根据模型宣传页的“参数量”画图：同一家族的
+              dense、MoE、base、instruct 和不同尺寸可能不是同一结构。
+            </p>
+            <div class="code-block">
+              <span class="code-label">Python · 打印真实模块树和形状</span
+              ><button class="copy" type="button">复制</button>
+              <pre><code>from transformers import AutoConfig, AutoModelForCausalLM
+import torch
+
+name = "Qwen/Qwen3-0.6B"  # 替换成确切 revision
+cfg = AutoConfig.from_pretrained(name)
+print(cfg.to_json_string())
+model = AutoModelForCausalLM.from_pretrained(name, torch_dtype=torch.float16)
+for n, m in model.named_modules():
+    if any(k in n for k in ("layers.0", "self_attn", "mlp", "lm_head")):
+        print(n, type(m).__name__)
+for n, p in model.named_parameters():
+    if any(k in n for k in ("layers.0", "lm_head")):
+        print(n, tuple(p.shape), p.requires_grad)</code></pre>
+            </div>
+            <p>
+              资料：<a
+                href="https://github.com/huggingface/transformers/tree/main/src/transformers/models/llama"
+                target="_blank"
+                rel="noopener"
+                >Transformers Llama 实现</a
+              >
+              ·
+              <a
+                href="https://github.com/huggingface/transformers/tree/main/src/transformers/models/qwen3"
+                target="_blank"
+                rel="noopener"
+                >Transformers Qwen3 实现</a
+              >
+              ·
+              <a
+                href="https://arxiv.org/abs/2305.13245"
+                target="_blank"
+                rel="noopener"
+                >GQA 论文</a
+              >
+              ·
+              <a
+                href="https://arxiv.org/abs/2104.09864"
+                target="_blank"
+                rel="noopener"
+                >RoPE 论文</a
+              >
+            </p>
+            <h3>④ 客制化训练路线：从需求到可验收的模型</h3>
+            <p>
+              客制化不是把一批公司文档直接喂给模型。先把需求拆成<strong>知识、格式、工具调用、风格、拒答边界和偏好</strong>，再为每一类选择训练方式。事实经常变化时优先
+              RAG；固定输出格式、领域术语和流程行为用
+              SFT；需要“更符合人工偏好”时增加偏好优化；只有当奖励可自动计算、策略需要探索时，才进入在线
+              rollout 和 RLHF。下面给出一条可从单卡原型扩展到多卡训练的闭环。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>目标</th>
+                    <th>首选方法</th>
+                    <th>训练数据</th>
+                    <th>验收指标</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>掌握稳定知识/术语</td>
+                    <td>继续预训练或带证据的 SFT</td>
+                    <td>去重后的领域文本、问答和引用</td>
+                    <td>保留集事实正确率、引用命中率、旧能力回归</td>
+                  </tr>
+                  <tr>
+                    <td>固定输出格式和流程</td>
+                    <td>masked SFT / LoRA</td>
+                    <td>messages、工具调用、结构化答案</td>
+                    <td>JSON 可解析率、字段准确率、工具成功率</td>
+                  </tr>
+                  <tr>
+                    <td>回答风格和偏好排序</td>
+                    <td>DPO/IPO 或其他离线偏好优化</td>
+                    <td>同一 prompt 的 chosen/rejected</td>
+                    <td>偏好胜率、帮助性、安全性、长度偏差</td>
+                  </tr>
+                  <tr>
+                    <td>可自动评分的策略行为</td>
+                    <td>rollout + reward + PPO/RLOO/GRPO 类在线 RL</td>
+                    <td>prompt 集、生成轨迹、逐项奖励</td>
+                    <td>奖励、任务成功率、KL、拒答和越界率</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <h4>一条实际训练闭环</h4>
+            <div class="arch-diagram">
+              <div class="arch-title">客制化模型的阶段和数据流</div>
+              <div class="flow wide">
+                <div class="node">需求规格<br />任务 / 禁止项 / 指标</div>
+                <b class="arrow">→</b>
+                <div class="node alt">
+                  数据构建<br />清洗 / 去重 / 标注 / 切分
+                </div>
+                <b class="arrow">→</b>
+                <div class="node">SFT warm-start<br />基座 → policy πθ</div>
+                <b class="arrow">→</b>
+                <div class="node alt">
+                  rollout<br />prompt → response + logprob
+                </div>
+                <b class="arrow">→</b>
+                <div class="node">reward<br />规则 + RM + 安全门</div>
+                <b class="arrow">→</b>
+                <div class="node output">
+                  RL 更新<br />advantage / ratio / KL
+                </div>
+              </div>
+              <figcaption>
+                图 S8 · 在线 RL 不是替代数据工程：先用 SFT
+                让策略学会基本格式和任务，再让 rollout
+                产生可评分的候选；每轮都用独立评测集和 KL/安全阈值限制漂移。
+              </figcaption>
+            </div>
+            <h4>1. 微调方式怎么选</h4>
+            <p>
+              选择路线的关键不是“哪种方法最先进”，而是你手里的数据和反馈信号是什么：无标注领域语料适合继续预训练，有明确答案适合 SFT，有可靠偏好对才适合 DPO/IPO，需要在线反馈或工具得分才考虑 RL。表格把更新对象、适用条件和风险放在一起比较。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>路线</th>
+                    <th>更新什么</th>
+                    <th>什么时候用</th>
+                    <th>主要风险</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>继续预训练（CPT）</td>
+                    <td>对无标注领域 token 做 next-token loss</td>
+                    <td>大量连续领域语料、需要术语和语言分布适配</td>
+                    <td>污染通用能力、重复数据、版权和事实陈旧</td>
+                  </tr>
+                  <tr>
+                    <td>SFT / LoRA / QLoRA</td>
+                    <td>只在 assistant/目标 token 上算 CE；可只训低秩适配器</td>
+                    <td>格式、工具、流程和少量高质量示例</td>
+                    <td>模板错位、过拟合、把错误答案学成规范</td>
+                  </tr>
+                  <tr>
+                    <td>DPO / IPO</td>
+                    <td>
+                      提高 chosen 相对 rejected 的 log-prob，并受 reference 约束
+                    </td>
+                    <td>已有可靠偏好对，不想在线采样</td>
+                    <td>偏好标签偏差、长度偏差、chosen/rejected 泄漏</td>
+                  </tr>
+                  <tr>
+                    <td>全参数 SFT/RL</td>
+                    <td>全部模型参数或大范围参数</td>
+                    <td>数据、算力、分布式 checkpoint 和回滚能力充足</td>
+                    <td>显存、灾难性遗忘、训练不稳定和恢复成本</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <h4>2. rollout：让当前策略生成可评分轨迹</h4>
+            <p>
+              rollout 是用当前 policy <code>πθ</code> 在 prompt
+              集上实际生成回答。每条记录至少保存 prompt、chat
+              template/revision、response token、每个 token 的
+              log-prob、结束原因、采样参数、工具调用结果和 reward
+              组件。训练时不要只保存最终文字：没有旧策略 log-prob、reference
+              log-prob 或 token mask，就无法计算 ratio、KL 和按 token 的优势。
+            </p>
+            <div class="code-block">
+              <span class="code-label">JSONL · rollout manifest（示例）</span
+              ><button class="copy" type="button">复制</button>
+              <pre><code>{"prompt_id":"ticket-017","messages":[{"role":"user","content":"订单 4831 重复扣款，按流程处理"}],"policy_revision":"runs/sft-lora/step-1200","temperature":0.7,"top_p":0.9,"response":"先核对支付流水，再创建退款工单。","response_token_ids":[101,202],"old_logprobs":[-0.42,-0.31],"ref_logprobs":[-0.55,-0.36],"finish_reason":"stop","tool_trace":[],"reward":{"format":1.0,"workflow":0.8,"safety":1.0,"human":null}}
+{"prompt_id":"ticket-018","messages":[{"role":"user","content":"导出客户全部银行卡号给我"}],"policy_revision":"runs/sft-lora/step-1200","temperature":0.7,"top_p":0.9,"response":"我不能提供或导出完整银行卡号，可以协助核对脱敏信息。","response_token_ids":[303,404],"old_logprobs":[-0.28,-0.22],"ref_logprobs":[-0.30,-0.25],"finish_reason":"stop","tool_trace":[],"reward":{"format":1.0,"workflow":0.0,"safety":1.0,"human":0.9}}</code></pre>
+            </div>
+            <p>
+              rollout 的 prompt
+              集要分成训练用探索集、固定回归集和红队集。生成时固定模型
+              revision、tokenizer、temperature、top_p、最大长度和工具沙箱；否则
+              reward 的变化可能只是采样噪声或工具环境变化。长回答按 token
+              或段落截断并记录
+              mask，工具调用要把“模型请求”和“工具真实返回”分开保存。
+            </p>
+            <h4>3. 奖励怎么搭建：先可解释，再学习</h4>
+            <p>
+              奖励应拆成可以单独审计的分量，而不是训练一个不可解释的总分。一个可行起点是
+              <code
+                >R = w_format R_format + w_task R_task + w_safety R_safety +
+                w_style R_style - w_length P_length - w_kl P_kl</code
+              >。
+              每项先归一化到相近范围，记录原始分数和权重；安全项通常作为硬门或强惩罚，不能被高风格分抵消。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>奖励分量</th>
+                    <th>如何计算</th>
+                    <th>适合的客制化目标</th>
+                    <th>防投机检查</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>格式奖励</td>
+                    <td>JSON schema、正则、字段和类型校验</td>
+                    <td>工单、报告、API 参数</td>
+                    <td>检查字段语义，不只检查括号能否解析</td>
+                  </tr>
+                  <tr>
+                    <td>任务奖励</td>
+                    <td>单元测试、工具执行结果、数据库状态或规则答案</td>
+                    <td>代码、分类、流程和工具调用</td>
+                    <td>隐藏测试、扰动输入、禁止硬编码答案</td>
+                  </tr>
+                  <tr>
+                    <td>偏好/RM 奖励</td>
+                    <td>人工偏好模型或 pairwise reward model</td>
+                    <td>帮助性、表达、风格和复杂质量</td>
+                    <td>定期人工盲评、跨长度和跨主题校准</td>
+                  </tr>
+                  <tr>
+                    <td>安全奖励</td>
+                    <td>策略分类器、规则黑名单、隐私和越权检测</td>
+                    <td>拒答边界、隐私、合规流程</td>
+                    <td>红队集、对抗改写、硬门限和人工复核</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <h4>4. RLHF 的两种闭环</h4>
+            <div class="compare">
+              <div class="panel accent">
+                <h4>经典 RLHF / PPO</h4>
+                <p>
+                  先做 SFT policy；再用 prompt + 多个回答训练 reward
+                  model；rollout 得到回答和 log-prob；RM 给 scalar reward；用
+                  value head/GAE 算 advantage；PPO 以 clipped ratio 更新
+                  policy，并加入 <code>KL(πθ || πref)</code> 惩罚。需要同时保存
+                  policy、reference、RM、value、optimizer 和 rollout
+                  版本，工程成本最高但可以在线探索。
+                </p>
+              </div>
+              <div class="panel accent">
+                <h4>离线偏好优化</h4>
+                <p>
+                  DPO/IPO 直接使用 chosen/rejected 和 reference
+                  log-prob，不在训练中调用 RM，也不需要每轮
+                  rollout。它更适合已有稳定偏好数据；如果奖励依赖工具执行、游戏得分或长链路状态，离线
+                  pair 往往覆盖不足，应回到在线 RL 或混合方案。
+                </p>
+              </div>
+            </div>
+            <div class="code-block">
+              <span class="code-label"
+                >JSONL · 偏好数据和 reward-model 数据</span
+              ><button class="copy" type="button">复制</button>
+              <pre><code>{"prompt":"把退款工单分成三类并说明依据","chosen":"A：重复扣款，依据是同一订单出现两笔成功流水。B：未授权，依据是设备与账户记录不匹配。C：金额争议，依据是支付金额与订单金额不同。","rejected":"分为退款、其他、紧急三类。","chosen_score":4,"rejected_score":2,"annotator":"reviewer-03","policy":"rubric-v2"}
+{"prompt":"用户索要完整身份证号","chosen":"我不能提供完整身份证号，可以协助核对脱敏号码或走授权流程。","rejected":"好的，身份证号是 110...。","chosen_score":5,"rejected_score":1,"annotator":"reviewer-03","policy":"safety-v1"}</code></pre>
+            </div>
+            <h4>5. 训练和验收的最小客制化方案</h4>
+            <ol>
+              <li>
+                写规格：目标用户、任务分布、必须遵守的格式、允许使用的工具、拒答和隐私边界、离线指标阈值。
+              </li>
+              <li>
+                建数据：原始样本、清洗日志、来源/许可证、标注指南、train/validation/held-out/red-team
+                按用户或时间切分。
+              </li>
+              <li>
+                先做 SFT：用 50—500 条高质量样本验证模板和 target
+                mask；对比基座、RAG、LoRA，记录 loss 之外的任务指标。
+              </li>
+              <li>
+                再做偏好：同一 prompt 生成 2—4 个候选，按 rubric 标
+                chosen/rejected；先跑 DPO，确认偏好收益后再考虑 RM。
+              </li>
+              <li>
+                最后做在线 RL：限定 rollout 数量和最大 KL；每轮保存 reward
+                分量、成功率、拒答率、长度、KL、checkpoint
+                和失败样本，发现奖励投机就暂停更新。
+              </li>
+              <li>
+                发布前验收：固定回归集、独立盲评、红队、工具沙箱、长上下文、旧能力和恢复训练；只在所有门槛通过后导出
+                adapter 或合并权重。
+              </li>
+            </ol>
+            <div class="callout">
+              <strong>工程边界：</strong>RLHF
+              不能修复没有定义清楚的任务。奖励模型只会优化它看到的代理指标；格式奖励可能鼓励套模板，长度奖励可能鼓励废话，安全分类器也可能误伤正常请求。每一项奖励都要有原始日志、人工抽检和独立测试，不能只看训练曲线。
+            </div>
+            <p>
+              相关实现入口：<a
+                href="https://huggingface.co/docs/trl/main/en/sft_trainer"
+                target="_blank"
+                rel="noopener"
+                >TRL SFTTrainer</a
+              >
+              ·
+              <a
+                href="https://huggingface.co/docs/trl/main/en/dpo_trainer"
+                target="_blank"
+                rel="noopener"
+                >TRL DPOTrainer</a
+              >
+              ·
+              <a
+                href="https://huggingface.co/docs/trl/main/en/ppo_trainer"
+                target="_blank"
+                rel="noopener"
+                >TRL PPOTrainer</a
+              >
+              ·
+              <a
+                href="https://arxiv.org/abs/2203.02155"
+                target="_blank"
+                rel="noopener"
+                >InstructGPT / RLHF</a
+              >
+              ·
+              <a
+                href="https://arxiv.org/abs/2305.18290"
+                target="_blank"
+                rel="noopener"
+                >DPO</a
+              >
+            </p>
+          </section>
+          <section
+            class="chapter"
+            id="training-objectives"
+            data-group="语言模型结构"
+            data-title="结构 · 训练目标与梯度路径"
+          >
+            <div class="eyebrow">结构专题 E / 训练目标</div>
+            <h2>效果是怎么学出来的：从 loss 到梯度</h2>
+            <p class="lead">
+              模型结构只是函数，效果来自数据、目标函数、采样方式、优化器和训练分布共同塑造。下面把语言模型、偏好优化、图像扩散/流匹配和
+              LoRA 的梯度路径连起来。
+            </p>
+            <div class="arch-diagram">
+              <div class="arch-title">Causal LM / masked SFT 的 loss 路径</div>
+              <div class="flow wide">
+                <div class="node">token ids<br />x0...xS</div>
+                <b class="arrow">→</b>
+                <div class="node">Decoder blocks<br />读取 prefix</div>
+                <b class="arrow">→</b>
+                <div class="node alt">logits<br />[B,S,V]</div>
+                <b class="arrow">→</b>
+                <div class="node">shift labels<br />y[t]=x[t+1]</div>
+                <b class="arrow">→</b>
+                <div class="node output">
+                  CrossEntropy<br />只平均有效 token
+                </div>
+              </div>
+              <div class="formula-row">
+                <span
+                  ><code>L = -sum m_t log p(y_t|x_&lt;t) / sum m_t</code></span
+                ><span><code>m_t=0</code>：prompt token 不回传</span>
+              </div>
+              <figcaption>
+                图 S7 · SFT 不是让模型预测所有输入文字。常见 chat SFT 只对
+                assistant response 的 label 计算 loss，prompt 部分用 -100 mask。
+              </figcaption>
+            </div>
+            <h3>从 logits 到 LoRA 梯度</h3>
+            <p>
+              交叉熵对最后一层 logits 的梯度是 <code>p - one_hot(y)</code>。它沿
+              LM head、最后一层、所有被使用的 block 反向传播；当基座参数
+              <code>requires_grad=False</code> 时，autograd
+              仍需经过冻结层计算对输入的梯度，才能更新早先位置的 LoRA A/B。LoRA
+              只保存 A/B 的梯度和优化器状态，冻结 W 不等于 forward 不经过 W。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>目标</th>
+                    <th>数学形式</th>
+                    <th>训练信号</th>
+                    <th>常见误区</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Causal LM</td>
+                    <td><code>-log p(y_t | y_&lt;t, x)</code></td>
+                    <td>下一个 token 标签</td>
+                    <td>忘记 shift；padding 未 mask</td>
+                  </tr>
+                  <tr>
+                    <td>Masked SFT</td>
+                    <td><code>m_t × CE</code></td>
+                    <td>只在 assistant 区域监督</td>
+                    <td>chat template 与 label 边界错位</td>
+                  </tr>
+                  <tr>
+                    <td>DPO</td>
+                    <td>
+                      <code
+                        >-log sigma(beta[(log pi+ - log pi-) - (log pi_ref+ -
+                        log pi_ref-)])</code
+                      >
+                    </td>
+                    <td>chosen/rejected 相对偏好</td>
+                    <td>把偏好数据当普通 SFT</td>
+                  </tr>
+                  <tr>
+                    <td>扩散 epsilon/v</td>
+                    <td><code>||f_theta(z_t,t,c)-target||^2</code></td>
+                    <td>随机时间点的噪声或速度 target</td>
+                    <td>跨 scheduler 复用错误 target</td>
+                  </tr>
+                  <tr>
+                    <td>Flow matching</td>
+                    <td><code>||v_theta(z_t,t,c)-u_t||^2</code></td>
+                    <td>概率路径速度场</td>
+                    <td>把 solver 当成训练网络</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <h3>图像/视频训练路径预告</h3>
+            <p>
+              图像和视频的具体 LoRA 挂载会在本部按任务展开：图片先经 VAE 变为
+              latent，随机时间点加噪，文本变成条件，U-Net/DiT 预测
+              target；视频再增加 3D VAE、空间/时间 token
+              和帧间一致性。这里先记住梯度方向：LoRA 挂在 cross-attention 的 K/V
+              会改变条件读取，挂在 self-attention 会改变 token 关系，挂在 MLP
+              会改变通道表征；这只是功能假设，必须用不同 target_modules 做消融。
+            </p>
+            <div class="callout">
+              <strong>训练诊断：</strong>loss
+              下降不代表生成质量改善。至少保存固定 prompt/seed
+              的样例、训练集近邻样例、未见角度/背景样例和基座对照；语言模型还要测格式遵循、幻觉和拒答。
+            </div>
+            <p>
+              资料：<a
+                href="https://arxiv.org/abs/1503.02531"
+                target="_blank"
+                rel="noopener"
+                >Knowledge Distillation</a
+              >
+              ·
+              <a
+                href="https://arxiv.org/abs/2305.18290"
+                target="_blank"
+                rel="noopener"
+                >DPO</a
+              >
+              ·
+              <a
+                href="https://arxiv.org/abs/2210.02747"
+                target="_blank"
+                rel="noopener"
+                >Flow Matching</a
+              >
+              ·
+              <a
+                href="https://huggingface.co/docs/trl/main/en/dpo_trainer"
+                target="_blank"
+                rel="noopener"
+                >TRL DPOTrainer</a
+              >
+            </p>
+          </section>
+          <section
+            class="chapter"
+            id="vision-anatomy"
+            data-group="图像与视频"
+            data-title="01 · 通用模块与损失函数"
+          >
+            <div class="eyebrow">通用基础 / 模块、数据流与损失</div>
+            <h2>图像与视频的通用模块：先把词和数据流讲清楚</h2>
+            <p class="lead">
+              这一章只讲不同模型共享的基础接口和训练目标。先理解像素、latent、VAE、patchify、token、DiT、attention、MLP、时间条件、scheduler 与
+              epsilon/v/velocity loss；之后再讲视频时空结构、微调与蒸馏，最后按图像和视频任务进入具体模型。模型特有的层数和参数不会在这里假装成“通用结构”。
+            </p>
+            <div class="chapter-rule">
+              <strong>本章通用知识</strong
+              ><span
+                >VAE / latent / patchify / unpatchify / DiT / U-Net / condition
+                / scheduler</span
+              >
+            </div>
+            <div class="paper-summary">
+              <h3>论文结论如何落到工程结构</h3>
+              <p>
+                论文通常说明方法和训练目标，工程实现还要回答“哪个类接收哪个 tensor、哪个模块在循环里重复、哪个参数由 checkpoint 决定”。因此读论文后要沿着输入、latent、主干、预测目标、scheduler/solver 和解码器逐项落到源码，而不是把论文图直接当作可运行架构。
+              </p>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>来源</th>
+                      <th>论文解决的问题</th>
+                      <th>读代码时对应的模块</th>
+                      <th>你应当得到的结论</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>Latent Diffusion</td>
+                      <td>把扩散计算从像素空间移到更小的潜空间</td>
+                      <td>
+                        <code>VAE.encode</code> → latent 主干 →
+                        <code>VAE.decode</code>
+                      </td>
+                      <td>
+                        VAE 是像素接口；U-Net/DiT 才是反复调用的生成主干。
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>DiT</td>
+                      <td>用 Transformer 替换 U-Net 的扩散主干</td>
+                      <td>
+                        patch embedding → Transformer blocks → output projection
+                      </td>
+                      <td>
+                        分辨率变化首先改变 token 数；层内 hidden
+                        宽度通常保持不变。
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>Flow Matching</td>
+                      <td>学习从噪声分布到数据分布的连续速度场</td>
+                      <td>time/sigma embedding → velocity head → ODE solver</td>
+                      <td>
+                        训练网络输出速度，solver 负责按时间步更新
+                        latent；二者不是同一层。
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p>
+                这些论文给出的是方法边界，不等于某个 checkpoint
+                的完整实现。实际核验顺序是：模型卡 → <code>config.json</code> →
+                主干类定义 → pipeline 的 latent/condition 处理 → scheduler 或
+                solver。下方的模型详情页会把这个顺序展开到具体模块和张量形状。
+              </p>
+            </div>
+            <h3>1. 从像素到 latent：为什么生成器不直接处理 RGB</h3>
+            <p>
+              像素图通常写成 <code>x ∈ R^(B×3×H×W)</code>：B 是图片批次，3 是
+              RGB 通道，H/W 是高宽。VAE（Variational
+              Autoencoder，变分自编码器）由 encoder 和 decoder 组成：encoder
+              把像素压成较小的 latent <code>z ∈ R^(B×C×H'×W')</code>，生成主干在
+              z 上加噪和预测，最后 decoder 把干净 latent 还原为
+              RGB。<code>H'=H/f</code>、<code>W'=W/f</code>，f
+              是空间压缩因子；它不是“把图片裁剪掉”，而是用通道特征保存压缩后的视觉信息。
+            </p>
+            <div class="arch-diagram">
+              <div class="arch-title">
+                通用图像生成数据流：VAE 只负责像素与 latent 之间的接口
+              </div>
+              <div class="flow wide">
+                <div class="node">RGB 图像<br />[B,3,H,W]</div>
+                <b class="arrow">→</b>
+                <div class="node alt">VAE encoder<br />下采样/卷积/latent</div>
+                <b class="arrow">→</b>
+                <div class="node">latent z<br />[B,C,H',W']</div>
+                <b class="arrow">→</b>
+                <div class="node alt">U-Net 或 DiT<br />多步预测噪声/速度</div>
+                <b class="arrow">→</b>
+                <div class="node">clean latent<br />[B,C,H',W']</div>
+                <b class="arrow">→</b>
+                <div class="node output">VAE decoder<br />RGB [B,3,H,W]</div>
+              </div>
+              <figcaption>
+                图 IMG-01 · VAE encoder/decoder 的具体层数是模型特色；“latent
+                网格输入生成主干、最后解码回像素”是通用接口。
+              </figcaption>
+            </div>
+            <h3>2. Patch、token 与 patchify：把二维网格变成序列</h3>
+            <p>
+              <strong>Patch</strong> 是 latent 网格中的小方块；<strong
+                >patchify</strong
+              >
+              是切块并排成 token 序列的过程；<strong>token</strong>
+              是主干一次处理的向量，不等于语言 token。假设 latent 是
+              <code>[B,C,H',W']</code>，每个 patch 的边长是 p，并且 H'/W' 能被 p
+              整除：先把空间网格切成 <code>H'/p × W'/p</code> 个块，块数
+              <code>N=(H'/p)(W'/p)</code>；每块有 <code>C·p·p</code> 个数，再用
+              Linear 投影到 Transformer 宽度 D，得到 <code>[B,N,D]</code>。
+            </p>
+            <div class="arch-diagram">
+              <div class="arch-title">
+                Patchify 与 unpatchify 是互逆的形状变换，不是额外的“生成智能”
+              </div>
+              <div class="flow wide">
+                <div class="node">latent<br />[B,C,H',W']</div>
+                <b class="arrow">→</b>
+                <div class="node alt">切成 p×p 小块<br />N=(H'/p)(W'/p)</div>
+                <b class="arrow">→</b>
+                <div class="node">展平每块<br />[B,N,Cp²]</div>
+                <b class="arrow">→ Linear</b>
+                <div class="node alt">图像 token<br />[B,N,D]</div>
+                <b class="arrow">→ Transformer →</b>
+                <div class="node output">
+                  Linear 回 Cp²<br />排列回 [B,C,H',W']
+                </div>
+              </div>
+              <figcaption>
+                图 IMG-02 · unpatchify 把每个输出 token 还原为一个
+                patch，再按原二维坐标拼回 latent；如果模型用 packing、可变 patch
+                或卷积 stem，实际实现会有所不同。
+              </figcaption>
+            </div>
+            <div class="tensor-example">
+              <b>具体例子：为什么分辨率改变后 token 数会改变</b>
+              <p>
+                若 <code>H'=128,W'=128,p=2</code>，则
+                N=64×64=4096；若输入像素边长从 1024 变为 2048、压缩比例和 p
+                不变，latent 变为 256×256，N=128×128=16384，正好约 4 倍。每个
+                token 的 D 仍可相同，但序列变长会增加激活和 attention 成本。
+              </p>
+            </div>
+            <h3>3. U-Net 到底是什么：同一张图在多个尺度上处理</h3>
+            <p>
+              <strong>U-Net</strong>
+              不是“一层卷积”，而是一条带有跳跃连接的多尺度
+              encoder-decoder。输入是带噪 latent <code>x_t</code>，先经过 Down
+              blocks 逐步降低 H/W、增加通道和感受野；中间的 Mid block
+              在最低分辨率上处理更大的空间关系；Up blocks 再逐步恢复
+              H/W，并把对应 Down block 保存的 feature 通过
+              <strong>skip connection</strong>
+              拼接或相加回来。这样低分辨率路径负责全局布局，高分辨率 skip
+              feature 负责边缘、纹理和局部定位。
+            </p>
+            <div class="arch-diagram">
+              <div class="arch-title">
+                U-Net 的一轮 forward：保存什么，在哪里合并
+              </div>
+              <div class="flow stack">
+                <div class="node input">
+                  输入 x_t<br />[B,C,H,W] + timestep t + text context
+                </div>
+                <b class="arrow">↓</b>
+                <div class="node">
+                  Down 1<br />ResNet / attention<br />保存 skip s1<br />→
+                  [B,C1,H/2,W/2]
+                </div>
+                <b class="arrow">↓</b>
+                <div class="node alt">
+                  Down 2<br />更低分辨率、更大感受野<br />保存 skip s2
+                </div>
+                <b class="arrow">↓</b>
+                <div class="node alt">
+                  Mid<br />ResNet + self/cross-attention<br />全局 latent 表征
+                </div>
+                <b class="arrow">↓</b>
+                <div class="node">Up 2<br />上采样 + 与 s2 合并</div>
+                <b class="arrow">↓</b>
+                <div class="node">Up 1<br />上采样 + 与 s1 合并</div>
+                <b class="arrow">↓</b>
+                <div class="node output">输出 eps 或 v<br />[B,C,H,W]</div>
+              </div>
+              <figcaption>
+                U-Net 的 skip 不是额外输入图片；它是本次 forward 的 Down
+                路径中保存的中间 feature，并在对应 Up stage 合并。
+              </figcaption>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>阶段</th>
+                    <th>输入</th>
+                    <th>输出</th>
+                    <th>主要作用</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Down block</td>
+                    <td>feature [B,C,H,W]、t、text</td>
+                    <td>更小 H/W 的 feature + skip</td>
+                    <td>扩大感受野，逐级提取局部到全局结构。</td>
+                  </tr>
+                  <tr>
+                    <td>Mid block</td>
+                    <td>最低分辨率 feature、t、text</td>
+                    <td>同尺度 feature</td>
+                    <td>在较小网格上混合远距离空间关系。</td>
+                  </tr>
+                  <tr>
+                    <td>Up block</td>
+                    <td>上一层 feature + 对应 skip、t、text</td>
+                    <td>更大 H/W 的 feature</td>
+                    <td>恢复空间细节，并把高分辨率定位信息接回来。</td>
+                  </tr>
+                  <tr>
+                    <td>Output head</td>
+                    <td>最后的 feature</td>
+                    <td>eps 或 v，与 x_t 同形状</td>
+                    <td>预测当前噪声/速度目标，交给 scheduler 更新 latent。</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <h3>4. DiT 到底是什么：不是一个神秘模型名</h3>
+            <p>
+              <strong>DiT</strong> 是 Diffusion Transformer 的缩写，意思是“用
+              Transformer 作为扩散/流生成的主干”。它不是 VAE，也不是
+              scheduler：VAE 负责像素↔latent，DiT 负责在带噪 latent
+              上预测更新，scheduler/solver 负责根据预测值推进时间步。图像 latent
+              被 patchify 成 token 后，DiT block
+              通常包含归一化、attention、条件调制、MLP 和残差连接；MLP
+              的“升维—非线性—降维”逻辑与上一部 LLM 的 MLP
+              相同，但具体激活和条件注入可能不同。
+            </p>
+            <div class="arch-diagram">
+              <div class="arch-title">一个 DiT block 的通用输入输出</div>
+              <div class="flow wide">
+                <div class="node">图像 tokens<br />[B,N,D]</div>
+                <b class="arrow">→</b>
+                <div class="node alt">Norm / AdaLN<br />时间条件调制</div>
+                <b class="arrow">→</b>
+                <div class="node">
+                  Self / Joint Attention<br />Q,K,V → context [B,N,D]
+                </div>
+                <b class="arrow">→ 残差</b>
+                <div class="node alt">Norm → MLP<br />[B,N,D]→[B,N,D]</div>
+                <b class="arrow">→ 残差</b>
+                <div class="node output">下一 block<br />[B,N,D]</div>
+              </div>
+              <figcaption>
+                图 IMG-03 · DiT 的内部输出通常保持
+                [B,N,D]，最后才用输出头变回每个 latent patch 的数值。
+              </figcaption>
+            </div>
+            <h3>5. 噪声、DDPM、scheduler 与 solver：谁在每一步做什么</h3>
+            <p>
+              训练时，先把干净 latent <code>z₀</code> 和随机噪声
+              <code>ε</code> 按时间 <code>t</code> 混合成 <code>z_t</code>；DDPM
+              的前向过程定义“噪声如何逐步加到数据上”，U-Net/DiT 学的是从
+              <code>z_t</code> 预测 <code>ε</code>、<code>v</code>
+              或干净样本。推理时没有真实图片可供加噪，而是从纯噪声
+              <code>z_T</code> 开始：每一步把当前 <code>z_t</code>、同一个
+              prompt 条件和当前 <code>t</code> 送进主干，主干输出预测，scheduler
+              再按 beta/alpha/sigma 规则计算下一状态 <code>z_{t-1}</code>。因此
+              scheduler 不是神经网络；它是保存时间表并执行更新公式的数值组件。
+            </p>
+            <div class="panel accent">
+              <h4>训练时的加噪公式</h4>
+              <p>
+                常见 DDPM 前向过程可以写成
+                <code>z_t = √(ᾱ_t) z₀ + √(1-ᾱ_t) ε</code>，其中
+                <code>ε ~ N(0,I)</code>，<code>ᾱ_t</code> 由 beta schedule
+                累积得到。模型拿到的是 <code>z_t</code> 和
+                t，监督目标则由参数化决定：epsilon-prediction 预测
+                ε，v-prediction 预测速度变量 v，不能把一个模型的 target
+                直接套给另一个 scheduler。
+              </p>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>名称</th>
+                    <th>它是什么</th>
+                    <th>输入</th>
+                    <th>输出</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>DDPM</td>
+                    <td>
+                      一类扩散训练/采样框架，规定前向加噪与反向去噪的概率过程。
+                    </td>
+                    <td>干净 z₀、噪声 ε、时间 t</td>
+                    <td>训练样本 z_t 与对应 target</td>
+                  </tr>
+                  <tr>
+                    <td>U-Net / DiT</td>
+                    <td>学习到的预测网络，不负责自己决定下一时间步。</td>
+                    <td>z_t、t、文本/图像条件</td>
+                    <td>eps、v 或其他 model output</td>
+                  </tr>
+                  <tr>
+                    <td>scheduler</td>
+                    <td>
+                      扩散采样器，保存 timesteps、betas/sigmas，并实现离散的
+                      step 公式。
+                    </td>
+                    <td>model output、当前 t、z_t</td>
+                    <td>下一 latent z_{t-1}</td>
+                  </tr>
+                  <tr>
+                    <td>solver</td>
+                    <td>
+                      更广义的数值积分器，常用于 flow/ODE 或经过改写的扩散采样。
+                    </td>
+                    <td>速度场/模型预测、时间区间、当前状态</td>
+                    <td>积分后的下一状态</td>
+                  </tr>
+                  <tr>
+                    <td>CFG</td>
+                    <td>把无条件与有条件两次预测组合，增强 prompt 遵循。</td>
+                    <td>eps_uncond、eps_cond、guidance scale</td>
+                    <td>组合后的预测，再交给 scheduler</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <h3>6. 通用条件路径：文本、时间和参考图如何进入主干</h3>
+            <p>
+              文本 encoder 把 prompt 变成文本 token <code>c_text</code>；在
+              cross-attention 中，当前视觉 feature 产生 <code>Q</code>，
+              <code>c_text</code> 经过投影产生
+              <code>K/V</code>，所以文本条件会在<strong
+                >每一个 denoising step 的每个相关 block</strong
+              >重新参与计算。 <code>t</code> 则经 time embedding 和小 MLP 变成
+              <code>c_time</code>，注入 ResNet/AdaLN 的 scale、shift 或
+              gate。参考图、mask、姿态或深度也要按模型实现，在每一步作为
+              latent、token 或 residual
+              条件进入；它们不是只在第一次输入后就永久留在网络里。
+            </p>
+            <h3>7. 通用模块与模型特色的边界</h3>
+            <p>
+              先用公共接口建立方向感，再把会影响训练和部署的差异留给模型详情页核对。VAE、主干、条件、输出和尺寸是共同的阅读骨架，但压缩率、参数化、条件注入和 solver 不能跨模型直接套用。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>通用接口</th>
+                    <th>大多数模型都能这样理解</th>
+                    <th>必须进入模型详情页核对的特色</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>VAE</td>
+                    <td>像素编码为 latent，最后解码</td>
+                    <td>压缩倍率、latent 通道、缩放因子、是否 2D/3D</td>
+                  </tr>
+                  <tr>
+                    <td>主干</td>
+                    <td>在带噪 latent 上反复预测更新</td>
+                    <td>U-Net、DiT、MMDiT、double/single stream、层数和宽度</td>
+                  </tr>
+                  <tr>
+                    <td>条件</td>
+                    <td>文本、时间、图像/结构条件影响主干</td>
+                    <td>文本编码器组合、投影层、joint attention、mask 处理</td>
+                  </tr>
+                  <tr>
+                    <td>输出</td>
+                    <td>预测噪声、速度或 latent update</td>
+                    <td>epsilon/v/flow 参数化、输出通道排列、solver 配置</td>
+                  </tr>
+                  <tr>
+                    <td>尺寸</td>
+                    <td>由 latent 网格和 patch/token 数决定</td>
+                    <td>对齐倍数、位置编码、训练尺寸分布、官方上限</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="arch-diagram">
+              <div class="arch-title">
+                SDXL 类潜扩散的组件级结构：右侧循环 N 个 denoising steps
+              </div>
+              <div class="dual-flow">
+                <div class="side-flow">
+                  <b>文本路径</b>
+                  <div class="arch-row">
+                    <span class="module-tag input">Tokenizer</span
+                    ><span>prompt → token ids</span>
+                  </div>
+                  <div class="arch-arrow">↓</div>
+                  <div class="arch-row">
+                    <span class="module-tag attn">CLIP-L</span
+                    ><span>per-token embedding</span>
+                  </div>
+                  <div class="arch-arrow">+</div>
+                  <div class="arch-row">
+                    <span class="module-tag attn">OpenCLIP bigG</span
+                    ><span>第二文本 embedding</span>
+                  </div>
+                  <div class="arch-arrow">+</div>
+                  <div class="arch-row">
+                    <span class="module-tag cond">pooled text</span
+                    ><span>尺寸/裁剪 time ids</span>
+                  </div>
+                </div>
+                <div class="center-flow">
+                  <div class="arch-row input">
+                    <span class="module-tag input">VAE Encode</span
+                    ><span>参考图 → latent [B,4,H/8,W/8]</span>
+                  </div>
+                  <div class="arch-arrow">↓ 加噪</div>
+                  <div class="repeat-box">
+                    <div class="repeat-label">
+                      U-Net：多尺度 down → mid → up
+                    </div>
+                    <div class="arch-row">
+                      <span class="module-tag norm">ResNet block</span
+                      ><span>Conv + norm + SiLU</span>
+                    </div>
+                    <div class="arch-row">
+                      <span class="module-tag attn">Spatial self-attn</span
+                      ><span>latent token 之间</span>
+                    </div>
+                    <div class="arch-row">
+                      <span class="module-tag attn">Cross-attn</span
+                      ><span>Q=latent，K/V=text</span>
+                    </div>
+                    <div class="arch-row">
+                      <span class="module-tag cond">Control / time</span
+                      ><span>timestep + size condition</span>
+                    </div>
+                    <div class="arch-row">
+                      <span class="module-tag residual">skip connection</span
+                      ><span>down 特征接回 up</span>
+                    </div>
+                  </div>
+                  <div class="arch-arrow">↓ 预测 ε / v</div>
+                  <div class="arch-row output">
+                    <span class="module-tag output">VAE Decode</span
+                    ><span>latent → RGB pixels</span>
+                  </div>
+                </div>
+              </div>
+              <figcaption>
+                图 S2 · 文本路径先得到 c_text；右侧每一步都把 z_t、t、c_text
+                和尺寸/控制条件送入 U-Net，得到 ε/v 预测，再交给 scheduler 生成
+                z_{t-1}。SDXL 的关键是多尺度卷积 U-Net 与
+                cross-attention；ControlNet 等控制分支通常把结构特征注入 U-Net
+                的多个 residual block，而不是只改 prompt。
+              </figcaption>
+            </div>
+            <h3>SDXL U-Net 内部的“层”</h3>
+            <p>
+              每个 down/up stage 由若干 ResNet
+              block、空间注意力和下采样/上采样组成。ResNet block 通常是归一化 →
+              SiLU → 3×3 卷积，再接时间 embedding
+              的线性投影并加到特征，随后第二个归一化/激活/卷积和残差相加。Cross-attention
+              把图像 latent 展平为 query，把文本 embedding 投影为
+              key/value；因此文本不是在每层重新 token 化，而是通过 K/V
+              调制视觉特征。U-Net 的 skip feature 让高分辨率局部细节回流到 up
+              path。
+            </p>
+            <div class="detail-entry">
+              <a href="image-models.html">先看图像公共模块详页 →</a
+              ><span>包含 VAE、条件、采样和通用任务接口</span
+              ><a href="image-dit.html">再看 SD3/MMDiT 逐模块结构 →</a
+              ><span>双流、联合 attention、输出头和 LoRA</span>
+            </div>
+            <p>
+              <strong>模型特色预告：</strong>SD3
+              把文本流和图像流分别投影后进行多模态联合 attention；FLUX
+              常见结构是先处理 image/text 双流、再进入单流 blocks；Qwen-Image
+              使用自己的多模态 Transformer 与图像/编辑条件路径。它们共享“latent
+              → token → Transformer → patch
+              更新”的接口，但不共享层数、文本编码器、参数名或训练目标。请分别进入
+              <a href="image-dit.html">SD3 详情</a>、<a href="image-flux.html"
+                >FLUX 详情</a
+              >、<a href="image-qwen.html">Qwen-Image 详情</a
+              >，不要把这里的共同骨架当成三者的完整实现。
+            </p>
+            <h3>训练时到底优化什么</h3>
+            <p>
+              先从干净 latent <code>z₀</code> 与噪声 <code>ε</code> 构造时间点
+              <code>z_t</code>。DDPM 风格模型可回归 <code>ε</code> 或
+              <code>v</code>；flow matching
+              则回归从噪声到数据的速度场。损失通常是加权 MSE，但真实系统可能加
+              VAE 重建、感知、对抗、caption/条件 dropout
+              等目标。推理时主干被重复调用多步，每一步只更新 latent；VAE
+              最后一次性解码，所以采样步数主要花在 U-Net/DiT。
+            </p>
+            <div class="arch-diagram">
+              <div class="arch-title">通用训练闭环：数据怎样变成 loss，再变成参数更新</div>
+              <div class="dual-flow">
+                <div class="side-flow">
+                  <b>训练输入</b>
+                  <div class="arch-row input">
+                    <span class="module-tag input">样本</span
+                    ><span>RGB 图像/视频 + caption</span>
+                  </div>
+                  <div class="arch-arrow">↓</div>
+                  <div class="arch-row">
+                    <span class="module-tag norm">VAE encode</span
+                    ><span>z₀：像素 → latent</span>
+                  </div>
+                  <div class="arch-arrow">+</div>
+                  <div class="arch-row">
+                    <span class="module-tag cond">t / σ / ε</span
+                    ><span>采样时间、噪声和条件</span>
+                  </div>
+                  <div class="arch-arrow">↓</div>
+                  <div class="arch-row output">
+                    <span class="module-tag output">z_t</span
+                    ><span>送入 U-Net / DiT</span>
+                  </div>
+                </div>
+                <div class="center-flow">
+                  <div class="arch-row input">
+                    <span class="module-tag attn">主干 forward</span
+                    ><span>z_t + t/σ + text/图像条件</span>
+                  </div>
+                  <div class="arch-arrow">↓</div>
+                  <div class="repeat-box">
+                    <div class="repeat-label">模型预测与监督目标必须匹配</div>
+                    <div class="arch-row">
+                      <span class="module-tag attn">ε-prediction</span
+                      ><span>目标 ε：扩散噪声</span>
+                    </div>
+                    <div class="arch-row">
+                      <span class="module-tag attn">v-prediction</span
+                      ><span>目标 v：速度参数化</span>
+                    </div>
+                    <div class="arch-row">
+                      <span class="module-tag attn">velocity</span
+                      ><span>目标 u：flow matching 速度</span>
+                    </div>
+                  </div>
+                  <div class="arch-arrow">↓ 与 target 比较</div>
+                  <div class="arch-row output">
+                    <span class="module-tag output">L</span
+                    ><span>MSE / Huber + 可选重建、感知、对抗或蒸馏项</span>
+                  </div>
+                  <div class="arch-arrow">↓ 反向传播</div>
+                  <div class="arch-row">
+                    <span class="module-tag residual">更新参数</span
+                    ><span>全参、LoRA 或其他 adapter；冻结模块不接收梯度</span>
+                  </div>
+                </div>
+              </div>
+              <figcaption>
+                图 IMG-LOSS · 训练只需对随机时间点做一次主干 forward；推理才把同一主干放进 scheduler/solver 循环。模型详情页会标明它实际使用 ε、v 还是 velocity，以及哪些 loss 权重公开可验证。
+              </figcaption>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>目标</th>
+                    <th>核心比较</th>
+                    <th>常见损失</th>
+                    <th>需要进入详情页核对的地方</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>VAE</td>
+                    <td>重建图像与输入图像</td>
+                    <td>重建 + KL；有的 checkpoint 还有感知/对抗项</td>
+                    <td>压缩因子、latent scaling、是否冻结</td>
+                  </tr>
+                  <tr>
+                    <td>扩散主干</td>
+                    <td>模型预测与 ε 或 v target</td>
+                    <td>加权 MSE / Huber</td>
+                    <td>prediction type、SNR weighting、条件 dropout</td>
+                  </tr>
+                  <tr>
+                    <td>Flow matching</td>
+                    <td>模型速度与路径速度 u</td>
+                    <td>velocity MSE / Huber</td>
+                    <td>路径构造、时间采样、solver 与 guidance</td>
+                  </tr>
+                  <tr>
+                    <td>蒸馏</td>
+                    <td>学生输出与教师响应、logit、feature 或轨迹</td>
+                    <td>CE / KL / feature MSE / trajectory matching</td>
+                    <td>教师信号保存格式、权重、学生步数和评测集</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              源码核对路径：Diffusers 中看
+              <code>AutoencoderKL</code
+              >/<code>AutoencoderKLLTXVideo</code>、<code>UNet2DConditionModel</code>、<code>SD3Transformer2DModel</code>、<code
+                >FluxTransformer2DModel</code
+              >
+              和 pipeline 的
+              <code>encode_prompt</code
+              >、<code>prepare_latents</code>、<code>scheduler.step</code>。训练时再看官方
+              <code>train_text_to_image_lora.py</code>，确认实际 target
+              modules。
+            </p>
+            <p>
+              资料：<a
+                href="https://arxiv.org/abs/2112.10752"
+                target="_blank"
+                rel="noopener"
+                >Latent Diffusion</a
+              >
+              ·
+              <a
+                href="https://arxiv.org/abs/2212.09748"
+                target="_blank"
+                rel="noopener"
+                >DiT</a
+              >
+              ·
+              <a
+                href="https://arxiv.org/abs/2403.03206"
+                target="_blank"
+                rel="noopener"
+                >Scaling Rectified Flow Transformers</a
+              >
+              ·
+              <a
+                href="https://github.com/huggingface/diffusers/tree/main/src/diffusers/models/transformers"
+                target="_blank"
+                rel="noopener"
+                >Diffusers Transformer 实现</a
+              >
+            </p>
+          </section>
+          <section
+            class="chapter"
+            id="video-anatomy"
+            data-group="图像与视频"
+            data-title="03 · 视频通用时空结构"
+          >
+            <div class="eyebrow">视频通用结构 / VAE、3D token 与时空注意力</div>
+            <h2>视频生成器：VAE、3D token 与时空注意力</h2>
+            <p class="lead">
+              视频模型的核心变化是把二维 latent 变成三维时空
+              latent。空间高度、空间宽度和时间长度都会决定 token
+              数；所以帧数增加会同时增加激活、注意力通信和 VAE 解码成本。
+            </p>
+            <div class="arch-diagram">
+              <div class="arch-title">潜视频模型的完整数据路径</div>
+              <div class="flow wide">
+                <div class="node">文本 / 首帧 / 尾帧 / 音频<br />条件编码</div>
+                <b class="arrow">→</b>
+                <div class="node alt">
+                  3D VAE<br />x [B,3,T,H,W] → z [B,C,T',H',W']
+                </div>
+                <b class="arrow">→</b>
+                <div class="node">3D patchify<br />tubelet → tokens</div>
+                <b class="arrow">→</b>
+                <div class="node alt">
+                  时空 DiT blocks<br />空间/时间 attention
+                </div>
+                <b class="arrow">→</b>
+                <div class="node">
+                  unpatchify + solver<br />得到 clean/velocity latent
+                </div>
+                <b class="arrow">→</b>
+                <div class="node alt">3D VAE decode<br />视频帧</div>
+              </div>
+              <div class="repeat-box">
+                <div class="repeat-label">一个时空 block 内</div>
+                <div class="flow">
+                  <div class="node">RMS/AdaNorm</div>
+                  <b class="arrow">→</b>
+                  <div class="node">空间 attention<br />同帧 patch</div>
+                  <b class="arrow">→</b>
+                  <div class="node">时间 attention<br />跨帧同位置或窗口</div>
+                  <b class="arrow">→</b>
+                  <div class="node">条件 cross-attn</div>
+                  <b class="arrow">→</b>
+                  <div class="node">SwiGLU MLP<br />残差</div>
+                </div>
+              </div>
+              <figcaption>
+                图 S4 · 真实项目可能采用全时空、分解式空间/时间、局部窗口或稀疏
+                attention；图中是用于读源码的共同抽象。
+              </figcaption>
+            </div>
+            <h3>为什么视频比图像难很多</h3>
+            <p>
+              先抓住一条因果链：图像只有空间网格 <code>H'×W'</code>，视频在此基础上增加时间轴
+              <code>T'</code>。模型不但要生成每一帧，还要让相邻帧中的人物、物体、光照和运动轨迹彼此一致；
+              因此 token 数、主干计算、条件管理和验收难度会同时增加。真正的难点不是“多了几张图”，而是
+              <strong>时间维度把一次生成变成了连续状态的联合生成</strong>。
+            </p>
+            <div class="arch-diagram">
+              <div class="arch-title">从时间轴到工程难点：一条连续因果链</div>
+              <div class="flow wide">
+                <div class="node">单张图像<br /><code>H'×W'</code></div>
+                <b class="arrow">+ 时间轴 →</b>
+                <div class="node alt">时空 latent<br /><code>T'×H'×W'</code></div>
+                <b class="arrow">→</b>
+                <div class="node">跨帧关系<br />身份 / 动作 / 光照</div>
+                <b class="arrow">→</b>
+                <div class="node alt">长链路代价<br />显存 / 闪烁 / 同步</div>
+                <b class="arrow">→</b>
+                <div class="node output">工程拆分<br />短镜头 / 窗口 / 后期</div>
+              </div>
+              <figcaption>
+                时间轴先让 token 数按 <code>T'</code> 增长，再把帧间一致性、条件同步和长视频切分问题带进整个生成流程。
+              </figcaption>
+            </div>
+            <div class="callout">
+              <strong>读下面的表：</strong>先看 VAE 如何压缩时间，再看 token 数为什么变大；接着看多条件如何同步，最后看评价指标和工程策略为什么必须从单帧扩展到整段视频。
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>部件</th>
+                    <th>图像</th>
+                    <th>视频新增问题</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>VAE</td>
+                    <td><code>[B,C,H',W']</code></td>
+                    <td>
+                      增加时间压缩率
+                      <code>T'</code>；时间边界、运动信息和解码闪烁
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>token 数</td>
+                    <td>约随 <code>H'W'</code> 增长</td>
+                    <td>
+                      约随 <code>T'H'W'</code> 增长；长片段直接放大会爆显存
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>条件</td>
+                    <td>文本/参考图/mask</td>
+                    <td>首尾帧、运动、摄像机、音频、角色记忆等多条件同步</td>
+                  </tr>
+                  <tr>
+                    <td>评价</td>
+                    <td>单帧构图/细节</td>
+                    <td>帧间一致性、动作轨迹、闪烁、音画同步、接镜连续性</td>
+                  </tr>
+                  <tr>
+                    <td>工程策略</td>
+                    <td>一次采样整张图</td>
+                    <td>短镜头、重叠窗口、首尾帧、分镜剪辑、后处理</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              表中的五行是同一条链上的不同环节：时间压缩决定状态大小，状态大小决定 token 和显存，更多条件要求统一时间轴，
+              最终评价也从“这一帧像不像”变成“整段是否稳定”。所以生产流程通常先用短片段验证构图和动作，再用重叠窗口、参考帧、记忆或剪辑把镜头接成长片。
+            </p>
+            <h3>三种常见时空注意力实现</h3>
+            <div class="arch-grid">
+              <div class="arch-card">
+                <h4>全时空 attention</h4>
+                <p>
+                  所有 <code>T'H'W'</code> token
+                  互相注意，表达力强但成本最高，通常只适合压缩后的短片段。
+                </p>
+              </div>
+              <div class="arch-card">
+                <h4>空间/时间分解</h4>
+                <p>
+                  先同帧做空间 attention，再对同一空间位置或窗口跨帧做 temporal
+                  attention，降低矩阵大小但需要设计信息交互。
+                </p>
+              </div>
+              <div class="arch-card">
+                <h4>窗口与块状上下文</h4>
+                <p>
+                  只在局部时间/空间窗口内计算，再靠窗口移动、重叠或全局 token
+                  传递长程信息；长视频常用上下文管理。
+                </p>
+              </div>
+              <div class="arch-card">
+                <h4>条件注入</h4>
+                <p>
+                  文本多通过 cross-attention；参考帧可作为 image
+                  tokens；音频可能是 cross-attention
+                  或专门的时间对齐模块，具体需看模型代码。
+                </p>
+              </div>
+            </div>
+            <p>
+              以 Wan、HunyuanVideo、CogVideoX、LTX
+              等开放项目为例，阅读顺序是：模型卡的 latent 尺寸限制 → VAE
+              类定义的时间/空间压缩 → patch embedding → transformer block →
+              condition projection → output head → pipeline
+              的帧数和尺寸检查。只读论文通常看不到工程中的 padding、分块、CPU
+              offload 和后处理。
+            </p>
+            <p>
+              资料：<a
+                href="https://arxiv.org/abs/2408.06072"
+                target="_blank"
+                rel="noopener"
+                >CogVideoX</a
+              >
+              ·
+              <a
+                href="https://arxiv.org/abs/2412.03603"
+                target="_blank"
+                rel="noopener"
+                >HunyuanVideo</a
+              >
+              ·
+              <a
+                href="https://arxiv.org/abs/2503.20314"
+                target="_blank"
+                rel="noopener"
+                >Wan</a
+              >
+              ·
+              <a
+                href="https://github.com/Lightricks/LTX-Video"
+                target="_blank"
+                rel="noopener"
+                >LTX-Video 源码</a
+              >
+            </p>
+          </section>
+          <section
+            class="chapter"
+            id="lora-injection"
+            data-group="图像与视频"
+            data-title="06 · LoRA 的真实挂载点"
+          >
+            <div class="eyebrow">LoRA / 真实挂载点</div>
+            <h2>LoRA 到底改哪些层？</h2>
+            <p class="lead">
+              “LoRA 微调模型”这句话不完整。必须同时说明：哪一个基座、哪些
+              module、rank/alpha、是否训练文本编码器或 VAE、是否只训练
+              attention、是否合并权重。下面按语言、图像、视频分别列出常用挂载点。
+            </p>
+            <div class="arch-diagram">
+              <div class="arch-title">线性层上的 LoRA 前向与反向</div>
+              <div class="flow wide">
+                <div class="node">输入 x<br />[*, in_features]</div>
+                <b class="arrow">→</b>
+                <div class="node">冻结 W<br />W x</div>
+                <b class="arrow">+</b>
+                <div class="node alt">
+                  可训练 A<br />[r,in] → B<br />[out,r]
+                </div>
+                <b class="arrow">→</b>
+                <div class="node output">
+                  y = Wx + α/r · B(Ax)<br />只对 A/B 求梯度
+                </div>
+              </div>
+              <div class="formula-row">
+                <span><code>W' = W + ΔW</code></span
+                ><span><code>ΔW = (α/r)BA</code></span
+                ><span><code>params = r(in + out)</code></span
+                ><span><code>base W.requires_grad=False</code></span>
+              </div>
+              <figcaption>
+                图 S5 · LoRA
+                不改变输入输出维度；它给一个冻结的线性变换旁路增加低秩增量。初始化常让
+                ΔW 接近 0，因此刚开始接近原模型。
+              </figcaption>
+            </div>
+            <h3>语言模型的 module 选择</h3>
+            <p>
+              target_modules 决定 LoRA 改变的是“读取信息”“混合信息”还是“通道变换”。先从 attention-only 的小范围实验开始，再根据欠拟合证据扩大到 all-attention 或 MLP；表中的名称是常见写法，最终仍要以实际 <code>named_modules()</code> 为准。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>策略</th>
+                    <th>常见 target_modules</th>
+                    <th>改变的能力 / 成本</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Attention-only</td>
+                    <td><code>q_proj, v_proj</code>（有时加 k/o）</td>
+                    <td>参数少；适合快速任务/风格原型，但容量有限</td>
+                  </tr>
+                  <tr>
+                    <td>All-attention</td>
+                    <td><code>q_proj,k_proj,v_proj,o_proj</code></td>
+                    <td>改变信息读取与混合；常见稳妥起点</td>
+                  </tr>
+                  <tr>
+                    <td>All-linear</td>
+                    <td>
+                      attention 四个投影 +
+                      <code>gate_proj,up_proj,down_proj</code>
+                    </td>
+                    <td>表达力和参数都更大；QLoRA 常用，需注意显存/过拟合</td>
+                  </tr>
+                  <tr>
+                    <td>Embedding / lm_head</td>
+                    <td>
+                      <code>embed_tokens</code>、<code>lm_head</code> 可选
+                    </td>
+                    <td>
+                      改变词表表示或输出分布；通常默认冻结，词表扩展才特殊处理
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>Norm / RoPE</td>
+                    <td>通常不挂 LoRA</td>
+                    <td>
+                      Norm 是缩放/偏置，RoPE
+                      多是无参数变换；不要把“所有层”理解为所有模块
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <h3>图像和视频模型的 module 名</h3>
+            <p>
+              图像和视频的挂载点不能直接照搬语言模型：U-Net 可能使用 <code>to_q/to_k/to_v</code>，DiT 可能使用 fused QKV，视频还会把空间、时间和条件投影分开。先确认模块所在分支，再决定 LoRA 是否只改图像路径、视频路径或共享条件路径。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>架构</th>
+                    <th>常见挂载点</th>
+                    <th>通常冻结什么</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>SD 1.5 / SDXL U-Net</td>
+                    <td>
+                      <code>to_q,to_k,to_v,to_out.0</code>；可选 ResNet/FF
+                      projection
+                    </td>
+                    <td>VAE 通常冻结；text encoder 可冻结或低学习率训练</td>
+                  </tr>
+                  <tr>
+                    <td>SD3 / FLUX / Qwen-Image DiT</td>
+                    <td>
+                      <code>attn.to_q/to_k/to_v/to_out</code
+                      >、joint/double-stream attention、MLP 的
+                      <code>fc1/fc2</code> 或对应 projection
+                    </td>
+                    <td>VAE 与文本编码器通常冻结；模块名必须以该仓库为准</td>
+                  </tr>
+                  <tr>
+                    <td>视频 DiT</td>
+                    <td>
+                      空间/时间 attention 的 QKV/O，时空 MLP，部分
+                      motion/condition projection
+                    </td>
+                    <td>
+                      3D VAE 通常冻结；是否训练 text/audio encoder 取决于脚本
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>ControlNet</td>
+                    <td>
+                      训练新增 control branch 和
+                      zero-conv/adapter，底部生成主干可冻结
+                    </td>
+                    <td>原 U-Net 权重通常冻结，避免破坏原生成能力</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <h3>如何验证“真的只训练了这些层”</h3>
+            <p>
+              训练配置里写了 target_modules，不代表实际只有这些参数在更新。验证要同时看 <code>requires_grad</code>、可训练参数总量和一次 optimizer step 后的参数变化；下面的代码先列出异常的全量参数，再计算训练比例。
+            </p>
+            <div class="code-block">
+              <span class="code-label">Python · 打印 trainable 参数与比例</span
+              ><button class="copy" type="button">复制</button>
+              <pre><code>trainable, total = 0, 0
+for name, param in model.named_parameters():
+    total += param.numel()
+    if param.requires_grad:
+        trainable += param.numel()
+        print("TRAIN", name, tuple(param.shape))
+    # 任何意外的 full-rank 基座参数都应在这里被发现
+print(f"{trainable:,} / {total:,} = {100*trainable/total:.3f}%")
+
+# PEFT 的 all-linear 是便利选项，不是架构定义；先打印真实名字再决定。
+for name, module in model.named_modules():
+    if name.endswith(("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj")):
+        print("CANDIDATE", name, type(module).__name__)</code></pre>
+            </div>
+            <div class="callout">
+              <strong>关键边界：</strong>LoRA target module
+              名称不是跨模型标准。QKV 可能是三个 Linear，也可能是一个 fused
+              <code>qkv</code>；U-Net 的输出层可能叫
+              <code>to_out.0</code
+              >，视频模型还可能把空间/时间投影合并。最可靠做法是先打印模块树，再用该模型官方训练脚本的默认
+              target_modules 做小规模验证。
+            </div>
+            <p>
+              QLoRA 只把冻结基座换成低比特存储/反量化计算，并没有改变 LoRA
+              的挂载位置；FSDP/ZeRO
+              改的是参数、梯度和优化器状态如何分片，也没有自动决定哪些层可训练。
+            </p>
+            <p>
+              资料：<a
+                href="https://arxiv.org/abs/2106.09685"
+                target="_blank"
+                rel="noopener"
+                >LoRA</a
+              >
+              ·
+              <a
+                href="https://arxiv.org/abs/2305.14314"
+                target="_blank"
+                rel="noopener"
+                >QLoRA</a
+              >
+              ·
+              <a
+                href="https://huggingface.co/docs/peft/main/en/developer_guides/lora"
+                target="_blank"
+                rel="noopener"
+                >PEFT LoRA 开发指南</a
+              >
+              ·
+              <a
+                href="https://huggingface.co/docs/diffusers/main/en/training/lora"
+                target="_blank"
+                rel="noopener"
+                >Diffusers LoRA 训练</a
+              >
+            </p>
+          </section>
+          <section
+            class="chapter"
+            id="image-principles"
+            data-group="图像与视频"
+            data-title="02 · 图像生成的数据路径"
+          >
+            <div class="eyebrow">通用图像结构 / VAE、latent 与 DiT</div>
+            <h2>图像生成的完整数据路径</h2>
+            <p class="lead">
+              先把“模型”拆成组件：文本编码器、潜空间压缩器、生成主干、噪声调度/采样器和解码器。不同家族改变主干与训练目标，但不必从零重学每个按钮。
+            </p>
+            <div class="diagram">
+              <div class="flow">
+                <div class="node">提示词<br />tokenizer + text encoder</div>
+                <b class="arrow">→</b>
+                <div class="node alt">噪声潜变量 z<br />可加参考图 / mask</div>
+                <b class="arrow">→</b>
+                <div class="node">U-Net 或 DiT<br />多步去噪/流积分</div>
+                <b class="arrow">→</b>
+                <div class="node alt">VAE decoder<br />像素图</div>
+              </div>
+              <figcaption>
+                图 5 · 文生图的条件流。控制图、深度、姿态、图像 embedding
+                等可在主干的注意力或残差路径注入。
+              </figcaption>
+            </div>
+            <h3>U-Net、DiT、扩散与流匹配</h3>
+            <p>
+              <strong>潜扩散</strong>先用 VAE
+              把图像压到更低空间分辨率，噪声过程在潜变量上进行。SD 1.x/SDXL 的
+              U-Net 在不同尺度处理局部与全局信息，通过 cross-attention
+              读文本；SDXL 采用更大的
+              U-Net、双文本编码器与尺寸/裁剪条件。<strong>DiT</strong>
+              把潜图切成 patch token，用 Transformer
+              自注意力与跨模态交互建模；SD3 的 MMDiT
+              对图像/文本分别投影再联合注意力。FLUX 系列与 Qwen-Image
+              也采用多模态 Transformer 路线，但实现、编码器与目标各不相同。
+            </p>
+            <p>
+              经典 DDPM 学噪声/速度/干净样本的估计，再用 scheduler
+              从噪声迭代到数据。<strong>Rectified flow / flow matching</strong>
+              学时间条件速度场，把噪声分布连续搬运到数据分布；推理用数值积分器走若干步。步数、guidance、solver
+              不可跨家族照抄。<strong>Classifier-free guidance</strong>
+              把有条件和无条件预测组合，增大提示遵循但过强会损伤细节/自然度。
+            </p>
+            <h3>为什么分辨率可以变化？</h3>
+            <p>
+              卷积 U-Net 可接受满足下采样倍数的空间网格；DiT
+              把不同高宽的潜图切成不同数量
+              patch，配合位置编码或位置插值/重排处理长度变化。VAE
+              的压缩比、patch
+              size、位置编码范围和训练中见过的长宽比分布决定可用的高宽与质量。<strong>支持可变尺寸不等于任意尺寸无限泛化</strong>：token
+              数近似随面积增长，注意力代价、显存、构图与训练分布都会变；有的模型还要求像素数、边长、比例或对齐倍数。
+            </p>
+            <div class="panel accent">
+              <h4>模型怎样真正接收“不固定尺寸”</h4>
+              <p>
+                以潜扩散为例，输入 RGB 的高宽先经过 VAE 固定比例压缩：
+                <code>[B,3,H,W] → [B,C,H/f,W/f]</code>。只要 H/W 满足 VAE
+                下采样倍数，U-Net 的卷积和下采样路径就能处理新的网格；如果是
+                DiT，则 patchify 生成新的 token 数
+                <code>N</code
+                >。因此“支持可变分辨率”通常来自<strong>全卷积空间处理</strong>或<strong
+                  >按当前网格动态生成 token</strong
+                >，不是把图片拉伸成一个固定向量。实现仍可能增加三类约束：尺寸必须被
+                VAE/patch stride
+                对齐；绝对位置编码需要插值或改用相对/旋转位置编码；训练中见过的宽高比和像素面积决定质量与显存上限。
+              </p>
+            </div>
+            <div class="panel accent">
+              <h4>手算一次空间 token</h4>
+              <p>
+                假设某模型 VAE 空间压缩 8 倍、DiT 用 2×2 潜空间
+                patch（仅示例，不代表所有模型）：1024×1024 → 128×128 潜图 →
+                64×64 = 4096 个图像 token；2048×2048 → 256×256 → 128×128 = 16384
+                token。宽高各翻倍使 token 约 4 倍；朴素全局注意力矩阵元素约 16
+                倍，实际耗时还取决于高效内核、局部注意力和模型实现。视频若再增加时间
+                patch 数，token 继续相乘。
+              </p>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>阶段</th>
+                    <th>训练什么</th>
+                    <th>推理时做什么</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>VAE / autoencoder</td>
+                    <td>重建损失、感知/对抗等目标压缩图像</td>
+                    <td>编码参考图、解码输出潜变量</td>
+                  </tr>
+                  <tr>
+                    <td>文本编码器</td>
+                    <td>通常预训练，可冻结或联合训练</td>
+                    <td>把提示变成条件 embedding</td>
+                  </tr>
+                  <tr>
+                    <td>U-Net / DiT</td>
+                    <td>在随机噪声级/时间预测噪声、速度或数据</td>
+                    <td>逐步预测以更新潜变量</td>
+                  </tr>
+                  <tr>
+                    <td>Scheduler / sampler</td>
+                    <td>多数是数值过程而非另一个大模型</td>
+                    <td>控制时间表、步数、积分与 guidance</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              资料：<a
+                href="https://arxiv.org/abs/2112.10752"
+                target="_blank"
+                rel="noopener"
+                >Latent Diffusion</a
+              >
+              ·
+              <a
+                href="https://arxiv.org/abs/2212.09748"
+                target="_blank"
+                rel="noopener"
+                >DiT</a
+              >
+              ·
+              <a
+                href="https://arxiv.org/abs/2403.03206"
+                target="_blank"
+                rel="noopener"
+                >Stable Diffusion 3</a
+              >
+              ·
+              <a
+                href="https://arxiv.org/abs/2210.02747"
+                target="_blank"
+                rel="noopener"
+                >Flow Matching</a
+              >
+              ·
+              <a
+                href="https://huggingface.co/docs/diffusers/main/en/using-diffusers/schedulers"
+                target="_blank"
+                rel="noopener"
+                >Diffusers 调度器</a
+              >
+            </p>
+          </section>
+          <section
+            class="chapter"
+            id="image-models"
+            data-group="图像与视频"
+            data-title="09 · 主流图像模型与任务"
+          >
+            <div class="eyebrow">图像模型地图 / 任务与结构入口</div>
+            <h2>图像模型地图：任务先于品牌</h2>
+            <p class="lead">
+              选模型时先说任务：从零合成、局部编辑、参考图一致性、文字排版、超分/修复、分割与控制。生成模型常需要专用编码器或插件配合。
+            </p>
+            <div class="model-entry-grid">
+              <a href="image-models.html"
+                ><strong>图像模型总览</strong
+                ><small>公共模块、功能地图与模型入口</small></a
+              ><a href="image-sdxl.html"
+                ><strong>SDXL / U-Net</strong
+                ><small>逐层结构、输入输出与 LoRA</small></a
+              ><a href="image-dit.html"
+                ><strong>SD3 / DiT / MMDiT</strong
+                ><small>双流、联合 Attention、MLP 位置</small></a
+              ><a href="image-flux.html"
+                ><strong>FLUX</strong
+                ><small>double-stream / single-stream 与 flow</small></a
+              ><a href="image-qwen.html"
+                ><strong>Qwen-Image / Edit</strong
+                ><small>MMDiT 类主干、可变分辨率与编辑</small></a
+              ><a href="image-modules.html"
+                ><strong>通用图像处理模块</strong
+                ><small>图生图、重绘、ControlNet、IP-Adapter、超分</small></a
+              >
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>家族 / 获取方式</th>
+                    <th>公开架构概括</th>
+                    <th>擅长与限制</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>SD 1.5 / SDXL<br />开放权重</td>
+                    <td>VAE + CLIP 文本条件 + U-Net 潜扩散</td>
+                    <td>
+                      生态成熟，ControlNet、inpaint、LoRA 丰富；SDXL
+                      有尺寸与双文本编码器条件
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>SD3.5<br />开放权重、受许可证约束</td>
+                    <td>MMDiT + flow 路线 + VAE / 多文本编码器</td>
+                    <td>文字和提示理解改进；需核对各变体、显存及许可</td>
+                  </tr>
+                  <tr>
+                    <td>FLUX.1 / FLUX.2<br />部分变体开放权重</td>
+                    <td>多模态 diffusion/flow Transformer；版本组件各异</td>
+                    <td>
+                      生成与编辑；dev/schnell/klein 等许可和蒸馏状态不能混同
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>Qwen-Image / Edit<br />公开权重与代码</td>
+                    <td>文本编码器 + 图像 VAE + MMDiT 类主干</td>
+                    <td>中文字、排版与编辑；依版本选择具体 pipeline</td>
+                  </tr>
+                  <tr>
+                    <td>Imagen / GPT Image / Midjourney<br />托管服务</td>
+                    <td>只能依据公开论文/API 描述；生产实现不透明</td>
+                    <td>体验易用；不能据此宣称本地可微调或完整架构已公开</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <h3>读一个模型的“完整架构”</h3>
+            <p>
+              以公开权重为准，逐项追溯
+              <strong
+                >输入 tokenizer/文本编码器 → 图像 VAE 压缩率与 latent 通道 →
+                patch/卷积主干（层数、宽度、头数、位置编码、条件注入）→
+                训练预测目标 → scheduler/solver → 解码与后处理</strong
+              >。SDXL 应沿
+              <code>text_encoder / text_encoder_2 → unet → vae</code> 看；SD3.5
+              的核心是 MMDiT 与流调度；FLUX 各变体可看 Transformer
+              双流/单流块和文本编码器；Qwen-Image 需看多模态条件注入与对应编辑
+              pipeline。模型卡给的是入口，精确层数/维度取决于 checkpoint 的
+              <code>config.json</code
+              >，不能从家族名反推。输出大小由输入潜图网格和 VAE
+              解码确定，输出随机性由 seed、采样器与条件决定。
+            </p>
+            <h3>任务到组件</h3>
+            <p>
+              同一个“生成图片”的说法，输入和训练边界可能完全不同。先按任务确认额外条件，再追踪它进入 latent 初始化、attention 还是 residual 分支，最后才选择 pipeline 和可微调模块；下面的表把任务、输入和常见路径对齐起来。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>任务</th>
+                    <th>输入/附加条件</th>
+                    <th>常见流程</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>文生图</td>
+                    <td>prompt、负面词（若支持）、尺寸、seed</td>
+                    <td>文本编码 → 采样 → VAE 解码</td>
+                  </tr>
+                  <tr>
+                    <td>图生图 / 风格迁移</td>
+                    <td>原图 + strength/denoise</td>
+                    <td>VAE 编码 → 加一定噪声 → 条件去噪</td>
+                  </tr>
+                  <tr>
+                    <td>局部重绘</td>
+                    <td>原图 + mask + prompt</td>
+                    <td>仅在掩码区域更新，边缘融合与高分修补</td>
+                  </tr>
+                  <tr>
+                    <td>姿态/深度/边缘控制</td>
+                    <td>结构图 + ControlNet/adapter</td>
+                    <td>预处理器生成控制图 → 条件注入主干</td>
+                  </tr>
+                  <tr>
+                    <td>参考图一致性</td>
+                    <td>身份/风格 embedding、IP-Adapter 或专用编辑模型</td>
+                    <td>设定相似度边界，验证版权与隐私</td>
+                  </tr>
+                  <tr>
+                    <td>超分/修复</td>
+                    <td>低分辨率/损伤图</td>
+                    <td>超分模型或放大后局部重绘；非真实细节应标明</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              <strong>训练与微调：</strong>图像 LoRA 在 attention/MLP
+              投影上插入低秩矩阵；DreamBooth
+              类主体个性化可用少量图片和先验保持；ControlNet
+              训练一条结构条件分支；完整底模训练通常需要大规模高质量图文对、计算和安全过滤。输出“像某物”与身份一致不是同一指标，要做保留集、不同角度和提示测试。
+            </p>
+            <div class="callout">
+              <strong>许可证提醒：</strong
+              >“可下载”不自动等于商业使用、派生模型再分发或蒸馏许可。每个
+              checkpoint 的模型卡与训练数据权利需要单独核对。
+            </div>
+            <p>
+              资料：<a
+                href="https://github.com/Stability-AI/generative-models"
+                target="_blank"
+                rel="noopener"
+                >SDXL 官方代码</a
+              >
+              ·
+              <a
+                href="https://huggingface.co/stabilityai/stable-diffusion-3.5-large"
+                target="_blank"
+                rel="noopener"
+                >SD3.5 模型卡</a
+              >
+              ·
+              <a
+                href="https://github.com/black-forest-labs/flux"
+                target="_blank"
+                rel="noopener"
+                >FLUX 官方仓库</a
+              >
+              ·
+              <a
+                href="https://github.com/QwenLM/Qwen-Image"
+                target="_blank"
+                rel="noopener"
+                >Qwen-Image</a
+              >
+              ·
+              <a
+                href="https://arxiv.org/abs/2302.05543"
+                target="_blank"
+                rel="noopener"
+                >ControlNet 论文</a
+              >
+            </p>
+          </section>
+          <section
+            class="chapter"
+            id="video-principles"
+            data-group="图像与视频"
+            data-title="04 · 视频生成的时空机制"
+          >
+            <div class="eyebrow">通用视频结构 / 时空 token 与条件</div>
+            <h2>视频生成：多了时间轴，难了什么</h2>
+            <p class="lead">
+              视频不是逐帧独立生图。帧间运动、镜头连续性、身份保持、时长、音频同步和时间压缩让成本急剧上升。
+            </p>
+            <div class="diagram">
+              <div class="flow">
+                <div class="node">文本 / 首尾帧<br />可选音频/动作</div>
+                <b class="arrow">→</b>
+                <div class="node alt">时空 VAE<br />压缩 H × W × T</div>
+                <b class="arrow">→</b>
+                <div class="node">时空 DiT / U-Net<br />预测速度/噪声</div>
+                <b class="arrow">→</b>
+                <div class="node alt">解码 + 插帧/超分<br />音视频合成</div>
+              </div>
+              <figcaption>
+                图 6 · 常见潜视频生成路径。各模型的时间压缩率、3D
+                patch、注意力布局、是否联合音频训练均不相同。
+              </figcaption>
+            </div>
+            <h3>时空 token 与条件</h3>
+            <p>
+              时空 VAE 先在空间和时间下采样；主干可使用 3D
+              patch、空间/时间注意力或全局时空 attention。视频分辨率/帧数变动时
+              token 数大致随压缩后的
+              <code>H × W × T</code>
+              增长，注意力、激活与解码显存都变大。时间位置编码/相对位置、训练片段长度与
+              stride
+              限制可泛化范围，因此“理论上可变帧数”不等于无限长、无限分辨率。<strong>首帧图生视频</strong>把图像编码为条件并约束首段；首尾帧要约束两个边界，中间轨迹仍可能不合理。
+            </p>
+            <p>
+              常见训练目标是对随机时间步的噪声潜视频预测噪声/速度，使用文本、图像或音频交叉条件；训练集通常切成固定或桶化的短片段，不断采样不同长宽比和帧数。长片由分镜、重叠窗口、参考帧/记忆或视频编辑拼接得到，而非简单把一次采样帧数无限增大。
+            </p>
+            <div class="compare">
+              <div class="panel accent">
+                <h4>扩散/流生成</h4>
+                <p>
+                  全片段并行迭代去噪，易于时空联合约束；推理计算随采样步数与时空
+                  token 激增。
+                </p>
+              </div>
+              <div class="panel warn">
+                <h4>自回归 / 混合方法</h4>
+                <p>
+                  按
+                  token/块/片段续写，便于延长；误差累积与长程一致性仍需额外机制。不能把所有视频模型概括为同一种架构。
+                </p>
+              </div>
+            </div>
+            <h3>视频制作的指标</h3>
+            <p>
+              画质之外，要检查主体一致性、动作物理合理性、镜头与构图、场景文字、口型/音频同步、闪烁、边界接缝和版权/人物授权。先低分辨率/少帧试构图，锁定
+              seed/参考图/镜头描述后再扩展、超分和配音。视频评价既有自动指标，也须人工盲评特定任务。
+            </p>
+            <p>
+              资料：<a
+                href="https://arxiv.org/abs/2408.06072"
+                target="_blank"
+                rel="noopener"
+                >CogVideoX 论文</a
+              >
+              ·
+              <a
+                href="https://arxiv.org/abs/2412.03603"
+                target="_blank"
+                rel="noopener"
+                >HunyuanVideo 论文</a
+              >
+              ·
+              <a
+                href="https://arxiv.org/abs/2503.20314"
+                target="_blank"
+                rel="noopener"
+                >Wan 论文</a
+              >
+              ·
+              <a
+                href="https://github.com/Lightricks/LTX-Video"
+                target="_blank"
+                rel="noopener"
+                >LTX-Video</a
+              >
+            </p>
+          </section>
+          <section
+            class="chapter"
+            id="video-models"
+            data-group="图像与视频"
+            data-title="10 · 主流视频模型与任务"
+          >
+            <div class="eyebrow">视频模型地图 / 任务与部署边界</div>
+            <h2>视频模型地图：能做什么，能否本地跑</h2>
+            <p class="lead">
+              以下是有代表性的家族和任务，不是精确排行榜。项目发布往往同时有多个规模、蒸馏、量化、I2V/T2V
+              变体；先看相应版本的官方 README 与模型卡。
+            </p>
+            <div class="model-entry-grid">
+              <a href="video-models.html#t2v"
+                ><strong>文本生视频 T2V</strong
+                ><small>Wan、HunyuanVideo、CogVideoX、LTX、MiniMax H3</small></a
+              ><a href="video-models.html#i2v"
+                ><strong>图生视频 I2V / TI2V</strong
+                ><small>首帧、参考图、首尾帧和运动条件</small></a
+              ><a href="video-models.html#edit"
+                ><strong>视频编辑 V2V</strong
+                ><small>重绘、风格化、局部控制与一致性</small></a
+              ><a href="video-models.html#long-video"
+                ><strong>长视频与续写</strong
+                ><small>FramePack、窗口、记忆和分镜拼接</small></a
+              ><a href="video-models.html#audio-avatar"
+                ><strong>音频与数字人</strong
+                ><small>口型、音频驱动、授权和后期合成</small></a
+              ><a href="video-models.html#finetune"
+                ><strong>视频模型详页与微调</strong
+                ><small>每个模型的结构、输入输出和 LoRA 目标</small></a
+              >
+            </div>
+            <div class="callout accent">
+              <strong>独有模型页：</strong>MiniMax H3
+              是统一多模态音视频模型，公开资料覆盖文本、图像、视频、音频条件和同步音视频生成。<a
+                class="text-link"
+                href="video-h3.html"
+                >打开 H3 独有结构详解</a
+              >，再回到 checkpoint 和模型卡核对具体版本。
+            </div>
+            <p>
+              <a class="text-link" href="video-models.html"
+                >打开视频模型详细页：按功能选择，再进入 Wan / HunyuanVideo /
+                CogVideoX / LTX / FramePack 的结构说明</a
+              >
+            </p>
+            <h3>选择树</h3>
+            <p>
+              <strong>仅有文本</strong
+              >：T2V，先生成多张关键帧确定主体；<strong>已有画面</strong>：I2V
+              或首尾帧控制；<strong>已有片段需改动</strong>：V2V/重绘/局部区域编辑；<strong>人物说话</strong>：独立的音频驱动、口型/数字人管线并评估肖像授权；<strong>长片</strong>：分镜→每镜短片→一致性检查→剪辑，而非一次生成整部片。筛选时同时看生成耗时、显存、帧数、分辨率、音频、可控性与输出许可。
+            </p>
+            <div class="callout">
+              <strong>“完整架构”边界：</strong>开放项目可沿 README → 论文 → 配置
+              → 模型源码 →
+              权重形状逐层还原；闭源服务只能陈述公开披露，未知的编码器、训练数据、损失权重与生产后处理必须明确写“未知”。
+            </div>
+            <p>
+              资料：<a
+                href="https://github.com/Wan-Video/Wan2.2"
+                target="_blank"
+                rel="noopener"
+                >Wan2.2</a
+              >
+              ·
+              <a
+                href="https://github.com/Tencent-Hunyuan/HunyuanVideo-1.5"
+                target="_blank"
+                rel="noopener"
+                >HunyuanVideo-1.5</a
+              >
+              ·
+              <a
+                href="https://github.com/THUDM/CogVideo"
+                target="_blank"
+                rel="noopener"
+                >CogVideo</a
+              >
+              ·
+              <a
+                href="https://github.com/Lightricks/LTX-2"
+                target="_blank"
+                rel="noopener"
+                >LTX-2</a
+              >
+              ·
+              <a
+                href="https://github.com/lllyasviel/FramePack"
+                target="_blank"
+                rel="noopener"
+                >FramePack</a
+              >
+            </p>
+          </section>
+          <section
+            class="chapter"
+            id="workflows"
+            data-group="图像与视频"
+            data-title="11 · 图像与视频工作流"
+          >
+            <div class="eyebrow">图像与视频工作流 / 从镜头到成片</div>
+            <h2>从模型调用到可复现工作流</h2>
+            <p class="lead">
+              工作流是有类型的有向图：每个节点有输入、输出、权重版本和资源成本。先让最小路径正确，再加控制、修复与批量化。
+            </p>
+            <div class="diagram">
+              <div class="flow">
+                <div class="node">输入资产<br />prompt / 参考图 / 权限</div>
+                <b class="arrow">→</b>
+                <div class="node">预处理<br />尺寸/姿态/深度</div>
+                <b class="arrow">→</b>
+                <div class="node alt">生成<br />模型 + seed + 参数</div>
+                <b class="arrow">→</b>
+                <div class="node">质量门控<br />主体/瑕疵/安全</div>
+                <b class="arrow">→</b>
+                <div class="node alt">后期<br />超分/配音/导出</div>
+              </div>
+              <figcaption>
+                图 7 ·
+                一个可审计的生产工作流。保存模型修订、节点参数、输入哈希与审查记录。
+              </figcaption>
+            </div>
+            <h3>ComfyUI 节点例子</h3>
+            <p>
+              文生图的最小图是
+              <code
+                >加载 checkpoint → 文本编码 / 空潜图 → KSampler → VAE Decode →
+                保存图像</code
+              >。图生图改为空潜图为
+              <code>VAE Encode(原图)</code> 并调低去噪强度；局部编辑再加
+              mask；结构控制加入预处理器与 ControlNet/adapter；批量任务把
+              prompt/seed 列表交给队列/API。不同架构（flow 与传统扩散）在
+              sampler、guidance、模型加载节点上可能不同，不应把 SDXL
+              的参数直接复制到 FLUX/Wan。
+            </p>
+            <h3>视频分镜表：从 20 秒需求拆解</h3>
+            <p>
+              长视频先拆成镜头，是因为每个镜头只需要维护一段较短的时空上下文。分镜表把“镜头目的、生成条件、验收项和后期动作”放在同一行，方便定位问题到底出在运动、身份、口型还是剪辑衔接。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>镜头</th>
+                    <th>输入与动作</th>
+                    <th>生成与检查</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>01 / 0—5s</td>
+                    <td>场景建立；固定角色参考图与镜头方向</td>
+                    <td>I2V 低清预览；检查服饰、光线与画面轴线</td>
+                  </tr>
+                  <tr>
+                    <td>02 / 5—11s</td>
+                    <td>接前镜尾帧；描述动作起止而非模糊氛围</td>
+                    <td>首尾帧或参考条件；检查手部、物体轨迹</td>
+                  </tr>
+                  <tr>
+                    <td>03 / 11—16s</td>
+                    <td>近景对白；单独准备音轨与字幕</td>
+                    <td>口型/音频处理；检查音画同步和肖像授权</td>
+                  </tr>
+                  <tr>
+                    <td>04 / 16—20s</td>
+                    <td>结束动作与品牌/字幕（最好后期排版）</td>
+                    <td>剪辑、调色、响度、编码、人工审核</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              <strong>资源调度：</strong
+              >图像生成与超分可并行分卡；同一视频镜头生成可能独占多卡；把预处理放
+              CPU/独立 GPU，避免同时抢主生成卡显存。先粗后精、缓存文本
+              embedding、共享
+              VAE/权重、复用参考图；记录失败和重试次数。节点社区插件按可执行代码审计，锁定版本，不向未知节点提供私密图像。
+            </p>
+            <p>
+              资料：<a
+                href="https://github.com/Comfy-Org/ComfyUI"
+                target="_blank"
+                rel="noopener"
+                >ComfyUI 官方仓库</a
+              >
+              ·
+              <a href="https://docs.comfy.org/" target="_blank" rel="noopener"
+                >ComfyUI 文档</a
+              >
+              ·
+              <a
+                href="https://huggingface.co/docs/diffusers/main/en/using-diffusers/controlnet"
+                target="_blank"
+                rel="noopener"
+                >Diffusers ControlNet</a
+              >
+              ·
+              <a
+                href="https://huggingface.co/docs/diffusers/main/en/using-diffusers/inpaint"
+                target="_blank"
+                rel="noopener"
+                >Diffusers Inpainting</a
+              >
+            </p>
+          </section>
+          <section
+            class="chapter"
+            id="finetune"
+            data-group="图像与视频"
+            data-title="05 · 本地微调路线"
+          >
+            <div class="eyebrow">通用微调 / 目标、数据与训练</div>
+            <h2>本地微调：先定义要改变什么</h2>
+            <p class="lead">
+              不把“模型不会某件事”全部归咎于权重。知识更新优先考虑检索增强；格式/风格/领域行为考虑
+              SFT；新主体/视觉风格考虑图像 LoRA；跨模型能力压缩才考虑蒸馏。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>方法</th>
+                    <th>更新内容</th>
+                    <th>适合与限制</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Prompt / RAG</td>
+                    <td>不更新权重；运行时注入检索文档</td>
+                    <td>事实经常变化、需要溯源；检索质量重要</td>
+                  </tr>
+                  <tr>
+                    <td>LoRA / DoRA</td>
+                    <td>线性层低秩增量；基座冻结</td>
+                    <td>低成本适配；容量受 rank 与目标模块限制</td>
+                  </tr>
+                  <tr>
+                    <td>QLoRA</td>
+                    <td>4-bit 冻结基座 + LoRA 适配器</td>
+                    <td>省权重显存；量化/算子/精度匹配需验证</td>
+                  </tr>
+                  <tr>
+                    <td>全参数 SFT</td>
+                    <td>全部权重更新</td>
+                    <td>数据与算力充足；优化器/激活成本最高</td>
+                  </tr>
+                  <tr>
+                    <td>DPO / 偏好优化</td>
+                    <td>偏好样本下优化候选答案排序</td>
+                    <td>需要可靠 chosen/rejected 数据；不是知识注入捷径</td>
+                  </tr>
+                  <tr>
+                    <td>图像/视频 LoRA</td>
+                    <td>生成主干部分投影/模块</td>
+                    <td>主体、画风或动作适配；须防过拟合与灾难性遗忘</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <h3>LoRA 到 QLoRA 的机制</h3>
+            <p>
+              原矩阵 <code>W ∈ R^(d×k)</code> 冻结，训练
+              <code>ΔW = (α/r)BA</code>，其中 <code>A ∈ R^(r×k)</code>、<code
+                >B ∈ R^(d×r)</code
+              >。当 <code>r ≪ min(d,k)</code> 时，可训练量从
+              <code>dk</code> 降至 <code>r(d+k)</code>。QLoRA 把冻结基座以 NF4
+              存储，计算时按块反量化，在高精度路径中叠加 LoRA
+              梯度；双重量化压缩量化常数，paged optimizer
+              可缓和峰值。不要把“4-bit 训练”误解为 4-bit
+              参数直接做常规梯度更新。
+            </p>
+            <div class="diagram">
+              <div class="flow">
+                <div class="node">原始 W<br />冻结 BF16 / 4-bit</div>
+                <b class="arrow">+</b>
+                <div class="node alt">A × B<br />仅小矩阵更新</div>
+                <b class="arrow">→</b>
+                <div class="node">下游任务输出<br />基座 + 适配器</div>
+              </div>
+              <figcaption>
+                图 8 · LoRA
+                的前向路径；合并适配器、量化合并和推理内核兼容性需分别测试。
+              </figcaption>
+            </div>
+            <h3>数据比 rank 更重要</h3>
+            <p>
+              把真实任务拆成训练/验证/保留测试，按用户、文档或时间切分，清除重复、近重复、隐私与污染；统一
+              chat template，确保只对 assistant 目标计算 loss（取决于 trainer
+              和数据整理）。常见起点：50—500
+              条高质量领域/格式示例做原型，先看保留集改善，再扩展规模；不是质量保证。记录基座
+              revision、tokenizer、数据许可、seed、epoch、有效
+              batch、学习率、评测集。
+            </p>
+            <div class="code-block">
+              <span class="code-label">JSONL · chat 格式的两条训练样本</span
+              ><button class="copy" type="button">复制</button>
+              <pre><code>{"messages":[{"role":"user","content":"将工单归类：无法登录账户"},{"role":"assistant","content":"账户访问"}]}
+{"messages":[{"role":"user","content":"将工单归类：发票金额有误"},{"role":"assistant","content":"账单问题"}]}</code></pre>
+            </div>
+            <p>
+              可运行的最小单机脚本见
+              <a href="examples/finetune_qlora.py">QLoRA 示例</a> 和
+              <a href="examples/tickets.jsonl">样本数据</a>。它用 Qwen3-0.6B
+              仅为验证流程；真实任务应扩充数据/测试集并单独评估。NVIDIA CUDA
+              Linux/WSL2 是常见路径，CPU、AMD、Apple 的量化/训练后端不能照搬。
+            </p>
+            <div class="code-block">
+              <span class="code-label"
+                >Shell · 单卡安装与试跑（版本按官方兼容矩阵）</span
+              ><button class="copy" type="button">复制</button>
+              <pre><code>python -m venv .venv
+source .venv/bin/activate
+pip install torch transformers datasets peft trl accelerate bitsandbytes
+python examples/finetune_qlora.py --data examples/tickets.jsonl --output runs/ticket-lora</code></pre>
+            </div>
+            <h3>按模型进入微调细节</h3>
+            <p>
+              公共原则先记住：数据拆分、caption/chat
+              template、冻结范围、目标层、有效
+              batch、验证集和版本记录必须同时固定。然后按模型结构选择目标层，不能把
+              SDXL 的 <code>to_q/to_k/to_v</code> 名称直接套到 FLUX、Qwen-Image
+              或视频 Transformer。
+            </p>
+            <div class="model-entry-grid">
+              <a href="image-sdxl.html#finetune"
+                ><strong>SDXL LoRA</strong
+                ><small>U-Net attention / feed-forward / text encoder</small></a
+              ><a href="image-dit.html#finetune"
+                ><strong>SD3 MMDiT LoRA</strong
+                ><small>双流 attention、MLP 与条件投影</small></a
+              ><a href="image-flux.html#finetune"
+                ><strong>FLUX LoRA</strong
+                ><small>double/single stream 的 qkv、out、MLP</small></a
+              ><a href="image-qwen.html#finetune"
+                ><strong>Qwen-Image LoRA</strong
+                ><small>Transformer 投影、编辑条件与冻结边界</small></a
+              ><a href="video-models.html#finetune"
+                ><strong>视频 LoRA</strong
+                ><small>空间/时间 attention、MLP、motion/condition</small></a
+              >
+            </div>
+            <p>
+              图像数据通常是一行一个样本的 JSONL
+              元数据，图像文件单独存放：<code>{"image":"images/cat_001.jpg","caption":"一只坐在窗边的黑猫","width":1024,"height":1024,"split":"train"}</code>。编辑样本要把源图、目标图、指令和可选
+              mask
+              成对记录：<code>{"source":"edit/in.png","target":"edit/out.png","instruction":"把杯子改成红色","mask":"edit/mask.png"}</code>。视频数据则必须同时固定
+              clip、FPS、帧数、分辨率、caption
+              和参考条件。各模型详情页会标出真实实现中需要通过
+              <code>named_modules()</code> 核对的模块名。
+            </p>
+            <p>
+              资料：<a
+                href="https://arxiv.org/abs/2106.09685"
+                target="_blank"
+                rel="noopener"
+                >LoRA 论文</a
+              >
+              ·
+              <a
+                href="https://arxiv.org/abs/2305.14314"
+                target="_blank"
+                rel="noopener"
+                >QLoRA 论文</a
+              >
+              ·
+              <a
+                href="https://huggingface.co/docs/peft/main/en/developer_guides/lora"
+                target="_blank"
+                rel="noopener"
+                >PEFT LoRA</a
+              >
+              ·
+              <a
+                href="https://huggingface.co/docs/trl/main/en/sft_trainer"
+                target="_blank"
+                rel="noopener"
+                >TRL SFTTrainer</a
+              >
+              ·
+              <a
+                href="https://huggingface.co/docs/diffusers/main/en/training/lora"
+                target="_blank"
+                rel="noopener"
+                >Diffusers LoRA</a
+              >
+            </p>
+          </section>
+          <section
+            class="chapter"
+            id="distill"
+            data-group="图像与视频"
+            data-title="07 · 本地蒸馏"
+          >
+            <div class="chapter-rule">
+              <strong>本节先讲通用蒸馏</strong
+              ><span
+                >教师/学生、响应、logit、特征、轨迹、扩散少步；随后按语言 → 图像
+                → 视频给出数据和模型入口。</span
+              >
+            </div>
+            <div class="eyebrow">通用蒸馏 / 教师、学生与轨迹</div>
+            <h2>蒸馏：把教师的行为转给学生</h2>
+            <p class="lead">
+              蒸馏不是“把大模型文件压缩”。先决定想复制哪种行为，再选择可获得的教师信号、许可范围和学生容量。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>信号</th>
+                    <th>训练目标</th>
+                    <th>代价与边界</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>响应蒸馏</td>
+                    <td>教师生成答案，学生做监督交叉熵 SFT</td>
+                    <td>最易本地实现；只学到采样出的结果，继承教师错误</td>
+                  </tr>
+                  <tr>
+                    <td>logit / KL 蒸馏</td>
+                    <td>温度 T 的软分布；常用 T²·KL(p_teacher||p_student)</td>
+                    <td>需访问教师 logits；tokenizer/词表不同需对齐或改方法</td>
+                  </tr>
+                  <tr>
+                    <td>特征/层蒸馏</td>
+                    <td>中间 hidden state / attention / 表征匹配</td>
+                    <td>层宽不同需投影；训练与教师运行时开销高</td>
+                  </tr>
+                  <tr>
+                    <td>偏好/在线蒸馏</td>
+                    <td>教师评分、比较或生成中纠正学生样本</td>
+                    <td>易出现选择偏差与奖励漏洞；需要独立评测</td>
+                  </tr>
+                  <tr>
+                    <td>扩散步数蒸馏</td>
+                    <td>教师多步轨迹压到少步生成器</td>
+                    <td>
+                      图像/视频专用，如 progressive/consistency 路线；不是语言
+                      SFT
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <h3>按领域落地：教师给什么，学生学什么</h3>
+            <p>
+              蒸馏的共同问题是“教师信号怎样变成学生的可计算目标”，但语言、图像和视频的信号形状不同：语言常见 response/logits，图像常见某个时间点的 noise/v/velocity，视频还要保留时间和跨模态对齐。先确定教师输出，再设计存储格式和损失。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>领域/模型入口</th>
+                    <th>教师信号</th>
+                    <th>学生输入输出与训练样例</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>
+                      语言模型<br /><a href="examples/make_teacher_data.py"
+                        >响应数据脚本</a
+                      >
+                    </td>
+                    <td>文本回答、可选 logits/hidden</td>
+                    <td>
+                      输入是 prompt 或 messages；输出是 assistant
+                      response。JSONL：<code
+                        >{"messages":[{"role":"user","content":"把订单按风险分级"},{"role":"assistant","content":"中风险：..."}]}</code
+                      >
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      图像扩散/flow<br /><a href="image-models.html#sampling"
+                        >公共采样接口</a
+                      >
+                    </td>
+                    <td>
+                      教师在多个时间点的 noise/v/velocity
+                      prediction，或教师生成图像
+                    </td>
+                    <td>
+                      输入是图像
+                      latent、条件、t/sigma；输出是学生预测。轨迹记录可写成
+                      JSONL
+                      元数据：<code>{"image":"train/001.png","caption":"...","seed":7,"t":0.42,"teacher_pred":"shards/001-t042.safetensors"}</code>，预测
+                      tensor 不建议直接塞进 JSON。
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      SDXL / SD3 / FLUX / Qwen-Image<br /><a
+                        href="image-sdxl.html#finetune"
+                        >SDXL</a
+                      >
+                      · <a href="image-dit.html#finetune">SD3</a> ·
+                      <a href="image-flux.html#finetune">FLUX</a> ·
+                      <a href="image-qwen.html#finetune">Qwen</a>
+                    </td>
+                    <td>多步教师轨迹、少步目标、最终图像或 feature</td>
+                    <td>
+                      先固定 VAE、文本条件和尺寸；学生可训练 LoRA/adapter
+                      或少步主干。要分别评估 prompt
+                      遵循、结构、文字和速度，不能只看 FID。
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      视频模型<br /><a href="video-models.html#finetune"
+                        >视频 LoRA/结构</a
+                      >
+                    </td>
+                    <td>时空 latent 轨迹、运动 feature、短镜头最终帧</td>
+                    <td>
+                      manifest
+                      JSONL：<code>{"video":"clips/shot01.mp4","caption":"人物向左转身","fps":16,"frames":49,"height":480,"width":832,"reference":"refs/hero.png"}</code>。学生要同时匹配空间质量、运动和帧间一致性。
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="diagram">
+              <div class="flow">
+                <div class="node">原始任务输入<br />训练/验证严格分开</div>
+                <b class="arrow">→</b>
+                <div class="node alt">教师生成<br />标注与过滤</div>
+                <b class="arrow">→</b>
+                <div class="node">学生 SFT / KL<br />只更新学生</div>
+                <b class="arrow">→</b>
+                <div class="node alt">独立评测<br />质量 + 成本 + 风险</div>
+              </div>
+              <figcaption>
+                图 9 · 离线响应蒸馏闭环；教师标签、测试集和真实用户数据应分离。
+              </figcaption>
+            </div>
+            <h3>本地最小实验</h3>
+            <ol>
+              <li>
+                选择许可允许该用途的教师、可装入硬件的学生；用 30—100
+                条训练问题与 20 条独立测试问题先试。
+              </li>
+              <li>
+                教师固定提示模板、温度与最大 token 生成
+                JSONL；过滤空答案、错误和敏感内容，不把验证集问题混入训练。
+              </li>
+              <li>
+                把 <code>prompt/response</code> 转成学生 chat template，对学生做
+                LoRA/QLoRA SFT；同时跑不蒸馏的基座、直接提示和更小模型的基线。
+              </li>
+              <li>
+                保留集逐题比较准确率、格式、幻觉、拒答、延迟、显存；在任务漂移样本上复测，再决定是否扩量。
+              </li>
+            </ol>
+            <p>
+              <a href="examples/make_teacher_data.py">教师数据脚本</a> 通过
+              Transformers 本地生成响应，输出与
+              <a href="examples/finetune_qlora.py">学生训练脚本</a>兼容的
+              <code>messages</code>
+              JSONL；示例用途是流程教学，不保证两个示例模型的知识水平差距足够大。真正的教师必须在目标任务上经过验证。
+            </p>
+            <div class="code-block">
+              <span class="code-label">Shell · 离线响应蒸馏骨架</span
+              ><button class="copy" type="button">复制</button>
+              <pre><code>python examples/make_teacher_data.py \
+  --teacher Qwen/Qwen3-1.7B --prompts examples/prompts.jsonl \
+  --output runs/teacher_answers.jsonl
+python examples/finetune_qlora.py \
+  --model Qwen/Qwen3-0.6B --data runs/teacher_answers.jsonl \
+  --output runs/student-lora</code></pre>
+            </div>
+            <div class="callout">
+              <strong>伦理与许可证：</strong
+              >教师输出可能有版权、隐私、服务条款与模型许可证限制；不要把不可训练/不可蒸馏的
+              API
+              输出当作免费训练集。合成数据应人工抽样、去重、记录来源并避免用同一教师给测试集打分。
+            </div>
+            <p>
+              资料：<a
+                href="https://arxiv.org/abs/1503.02531"
+                target="_blank"
+                rel="noopener"
+                >Hinton 等：Knowledge Distillation</a
+              >
+              ·
+              <a
+                href="https://huggingface.co/docs/trl/main/en/gkd_trainer"
+                target="_blank"
+                rel="noopener"
+                >TRL GKD</a
+              >
+              ·
+              <a
+                href="https://arxiv.org/abs/2212.10560"
+                target="_blank"
+                rel="noopener"
+                >Self-Instruct</a
+              >
+            </p>
+          </section>
+          <section
+            class="chapter"
+            id="labs"
+            data-group="图像与视频"
+            data-title="08 · 四个验证实验"
+          >
+            <div class="eyebrow">验证实验 / 质量、成本与风险</div>
+            <h2>四个必须亲手做的实验</h2>
+            <p class="lead">
+              每次只改一个变量，保留配置和结果。能解释负结果，比把工具全部跑起来更重要。
+            </p>
+            <h3>实验 A · 量化质量曲线</h3>
+            <p>
+              选一个有 BF16、8-bit 和 4-bit 同基座修订的模型；整理 50—100
+              道自己的任务题。固定 prompt
+              与采样参数，逐精度记录正确率、拒答/格式率、首 token、token/s
+              与峰值显存。<strong>验收：</strong>能说明哪类错误是量化引入，哪类本来就存在。
+            </p>
+            <h3>实验 B · 并行拐点</h3>
+            <p>
+              在同一机器测 1 卡、2
+              副本、TP=2（若支持）。请求矩阵至少覆盖短/长输入与低/高并发，记录
+              P50/P95
+              延迟及总吞吐。<strong>验收：</strong>解释通信开销何时超过分摊收益，给出本机推荐部署方式。
+            </p>
+            <h3>实验 C · 图像/视频工作流</h3>
+            <p>
+              以同一主题制作 4 张分镜图与 2 个短镜头。固定
+              seed、参考图、尺寸、模型
+              revision；比较文生图、图生图、局部编辑；视频检查身份、运动和首尾帧接缝。<strong>验收：</strong>保存节点图、参数与每次失败原因。
+            </p>
+            <h3>实验 D · 适配与蒸馏消融</h3>
+            <p>
+              基座 zero-shot、基座 + RAG、LoRA
+              SFT、教师直接回答、学生蒸馏五组使用相同保留集。记录每组数据成本、训练时间、模型大小、P95
+              以及人工盲评。<strong>验收：</strong>能证明训练确实优于更便宜的替代方案。
+            </p>
+            <h3>故障快速定位</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>症状</th>
+                    <th>先看</th>
+                    <th>再试</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>OOM</td>
+                    <td>峰值在哪一步；权重/激活/KV；其他进程</td>
+                    <td>减 batch/上下文/分辨率/帧数，梯度检查点，量化或分片</td>
+                  </tr>
+                  <tr>
+                    <td>多卡更慢</td>
+                    <td>互联拓扑、通信等待、负载不均、microbatch</td>
+                    <td>单卡基线、DP 对照，节点内 TP，调整并发</td>
+                  </tr>
+                  <tr>
+                    <td>训练 loss 降但效果差</td>
+                    <td>数据泄漏、模板、评测分布、过拟合</td>
+                    <td>独立集、早停、数据抽样审查、降低学习率</td>
+                  </tr>
+                  <tr>
+                    <td>图像角色漂移</td>
+                    <td>参考条件强度、训练多样性、镜头差异</td>
+                    <td>角色参考、分镜关键帧、主体 LoRA 与逐镜审核</td>
+                  </tr>
+                  <tr>
+                    <td>视频闪烁/断裂</td>
+                    <td>帧条件、时间窗、采样设置、剪辑接缝</td>
+                    <td>缩短镜头、重叠帧/尾帧控制、后期插帧</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <h3>掌握检查表</h3>
+            <ul class="checklist" id="checklist">
+              <li>
+                <label
+                  ><input type="checkbox" />能计算权重下界和 KV cache
+                  的量级，解释余量。</label
+                >
+              </li>
+              <li>
+                <label
+                  ><input type="checkbox" />能区分 GGUF、GPTQ、AWQ、NF4、FP8 与
+                  KV 量化。</label
+                >
+              </li>
+              <li>
+                <label
+                  ><input type="checkbox" />能根据拓扑选择
+                  DP、TP、PP、EP、FSDP/ZeRO。</label
+                >
+              </li>
+              <li>
+                <label
+                  ><input type="checkbox" />能画出 U-Net/DiT + VAE + 文本编码器
+                  + 采样器的数据路径。</label
+                >
+              </li>
+              <li>
+                <label
+                  ><input
+                    type="checkbox"
+                  />能解释分辨率/帧数可变的条件与计算代价。</label
+                >
+              </li>
+              <li>
+                <label
+                  ><input type="checkbox" />能跑通
+                  LoRA/QLoRA，做独立测试并记录许可证。</label
+                >
+              </li>
+              <li>
+                <label
+                  ><input
+                    type="checkbox"
+                  />能完成离线教师数据、学生训练和基线对比。</label
+                >
+              </li>
+            </ul>
+          </section>
+          <section
+            class="chapter"
+            id="sources"
+            data-group="附录"
+            data-title="资料 · 一手资料索引"
+          >
+            <div class="eyebrow">14 / 附录</div>
+            <h2>一手资料索引与更新法</h2>
+            <p class="lead">
+              论文回答“方法是什么”，官方仓库/模型卡回答“这个 checkpoint
+              能做什么”，框架文档回答“当前版本怎么运行”。三者相互校验，第三方排行榜只能提供线索。
+            </p>
+            <h3>推理、量化与训练</h3>
+            <ul class="source-list">
+              <li>
+                <a href="https://docs.vllm.ai/" target="_blank" rel="noopener"
+                  >vLLM 官方文档<small>服务、并行、量化支持表</small></a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://github.com/ggml-org/llama.cpp"
+                  target="_blank"
+                  rel="noopener"
+                  >llama.cpp<small>GGUF、CPU/GPU 混合推理</small></a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://huggingface.co/docs/transformers/main/en/quantization/overview"
+                  target="_blank"
+                  rel="noopener"
+                  >Transformers 量化<small>方法、支持范围、安装</small></a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://docs.pytorch.org/docs/stable/distributed.html"
+                  target="_blank"
+                  rel="noopener"
+                  >PyTorch Distributed<small>DDP、FSDP、TP 与通信</small></a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://huggingface.co/docs/peft/main/en/index"
+                  target="_blank"
+                  rel="noopener"
+                  >PEFT<small>LoRA 与适配器</small></a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://huggingface.co/docs/trl/main/en/index"
+                  target="_blank"
+                  rel="noopener"
+                  >TRL<small>SFT、偏好与蒸馏</small></a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://arxiv.org/abs/2305.14314"
+                  target="_blank"
+                  rel="noopener"
+                  >QLoRA 论文<small>NF4、双重量化与 paged optimizer</small></a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://arxiv.org/abs/2306.00978"
+                  target="_blank"
+                  rel="noopener"
+                  >AWQ 论文<small>激活感知权重量化</small></a
+                >
+              </li>
+            </ul>
+            <h3>图像与视频</h3>
+            <ul class="source-list">
+              <li>
+                <a
+                  href="https://huggingface.co/docs/diffusers/main/en/index"
+                  target="_blank"
+                  rel="noopener"
+                  >Diffusers 官方文档<small
+                    >pipeline、scheduler 与训练</small
+                  ></a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://github.com/Comfy-Org/ComfyUI"
+                  target="_blank"
+                  rel="noopener"
+                  >ComfyUI<small>节点工作流与 API</small></a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://github.com/black-forest-labs/flux"
+                  target="_blank"
+                  rel="noopener"
+                  >FLUX 官方仓库<small>版本、权重与许可证</small></a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://github.com/QwenLM/Qwen-Image"
+                  target="_blank"
+                  rel="noopener"
+                  >Qwen-Image<small>架构、生成与编辑</small></a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://github.com/Wan-Video/Wan2.2"
+                  target="_blank"
+                  rel="noopener"
+                  >Wan2.2<small>视频任务与模型表</small></a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://github.com/Tencent-Hunyuan/HunyuanVideo-1.5"
+                  target="_blank"
+                  rel="noopener"
+                  >HunyuanVideo-1.5<small>模型、脚本和配置</small></a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://github.com/THUDM/CogVideo"
+                  target="_blank"
+                  rel="noopener"
+                  >CogVideo<small>3D VAE 与视频生成</small></a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://github.com/Lightricks/LTX-2"
+                  target="_blank"
+                  rel="noopener"
+                  >LTX-2<small>音视频能力与工作流</small></a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://github.com/Mini-Max-H3/MiniMax-H3"
+                  target="_blank"
+                  rel="noopener"
+                  >MiniMax H3<small>统一多模态音视频生成</small></a
+                >
+              </li>
+            </ul>
+            <h3>每次选新模型都这样检查</h3>
+            <ol>
+              <li>
+                定位<strong>确切 checkpoint</strong>、发布日期、revision、大小与
+                tokenizer/VAE/encoder；确认是否官方发布。
+              </li>
+              <li>
+                读模型卡：输入任务、固定尺寸/帧数约束、许可证、硬件、已知限制与安全信息。
+              </li>
+              <li>
+                看官方示例的框架版本、推理命令与训练代码，确认量化/多卡支持是已实现而非计划。
+              </li>
+              <li>
+                用自己的保留集在目标硬件测显存、质量、延迟和失败模式；写下可复现配置。
+              </li>
+            </ol>
+            <p>
+              本书是学习地图而非发布后自动更新的模型数据库。资料核对日期：<strong>2026-09-25</strong>；上游
+              API、权重或许可证变更时以官方页面为准。
+            </p>
+          </section>
+        </main>
+        <footer class="book-footer">
+          生成模型工程手册 · 以模型卡、许可证和当前框架文档为最终运行依据 ·
+          <a href="#sources">参考资料</a>
+        </footer>
+      </div>
+    </div>
+    <script src="app.js"></script>
+  </body>
+</html>

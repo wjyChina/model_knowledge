@@ -1,0 +1,4 @@
+{"messages":[{"role":"user","content":"将工单归类：无法登录账户"},{"role":"assistant","content":"账户访问"}]}
+{"messages":[{"role":"user","content":"将工单归类：发票金额有误"},{"role":"assistant","content":"账单问题"}]}
+{"messages":[{"role":"user","content":"将工单归类：怎样修改密码？"},{"role":"assistant","content":"账户访问"}]}
+{"messages":[{"role":"user","content":"将工单归类：付款后没有收到收据"},{"role":"assistant","content":"账单问题"}]}

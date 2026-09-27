@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>FLUX / Qwen-Image 结构入口 | 生成模型工程手册</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="detail.css" />
+    <script defer src="detail.js"></script>
+  </head>
+  <body>
+    <div class="detail-top">
+      <a href="image-models.html">← 图像模型总览</a><span>模型分流入口</span
+      ><a href="image-flux.html">FLUX 详解 →</a>
+    </div>
+    <main class="detail-reader">
+      <div class="eyebrow">模型入口 / 已拆分为独立详页</div>
+      <h1>FLUX 和 Qwen-Image 不再合并阅读</h1>
+      <p class="lead">
+        两者都属于多模态图像 Transformer 家族，但文本编码、token packing、block
+        组织、编辑
+        pipeline、配置参数和微调脚本不能互相替代。请按模型进入独立页面，先看公共模块，再核对对应
+        checkpoint。
+      </p>
+      <div class="detail-cards">
+        <a href="image-flux.html"
+          ><strong>进入 FLUX 结构详解</strong
+          ><span
+            >CLIP/T5、double-stream、single-stream、MLP、flow matching、分辨率与
+            LoRA</span
+          ></a
+        ><a href="image-qwen.html"
+          ><strong>进入 Qwen-Image / Edit 结构详解</strong
+          ><span
+            >20B MMDiT 类主干、文字渲染、Edit 条件、可变分辨率与 LoRA</span
+          ></a
+        >
+      </div>
+      <div class="callout">
+        <strong>阅读规则：</strong>“MMDiT
+        类”只说明家族关系，不代表两个模型的层数、宽度、位置编码、文本 encoder
+        或参数名相同。实际训练请以模型源码、config.json、模型卡和官方脚本为准。
+      </div>
+      <p>
+        公共知识入口：<a href="image-models.html">图像模型公共模块与功能地图</a>
+        · <a href="image-modules.html">图像处理模块输入输出</a> ·
+        <a href="index.html#finetune">按模型微调入口</a>
+      </p>
+    </main>
+  </body>
+</html>

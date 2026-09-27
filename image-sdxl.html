@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>SDXL U-Net 结构详解 | 生成模型工程手册</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="detail.css" />
+  </head>
+  <body>
+    <div class="detail-top">
+      <a href="image-models.html">← 图像模型总览</a
+      ><span>SD1.5 / SDXL 结构详解</span
+      ><a href="image-dit.html">DiT/MMDiT →</a>
+    </div>
+    <main class="detail-reader">
+      <div class="eyebrow">模型详解 A / U-Net Latent Diffusion</div>
+      <h1>SD 1.5 / SDXL：U-Net 每个模块的输入与输出</h1>
+      <p class="lead">
+        这里把 SD 1.5 与 SDXL 的 Text Encoder、VAE、U-Net、Scheduler
+        四条数据路径展开成可追踪的顺序数据流，并<b>把两者的条件编码分开画</b>：
+        SD 1.5 只有一个 CLIP-L 文本编码器（U-Net
+        <code>cross_attention_dim=768</code>，没有 pooled 文本条件）；SDXL 使用
+        CLIP-L + OpenCLIP bigG 两个文本编码器（<code>cross_attention_dim=2048</code>），
+        并额外把 pooled embedding 与 added time/size ids 送入
+        U-Net。把 SDXL 的双编码器路径当成 SD 1.5 的路径是最常见的错误。
+        本页形状示例取自两个官方 checkpoint 的 config；具体层数、skip
+        数量仍以所选 checkpoint 为准。
+      </p>
+      <div class="detail-terms">
+        <b>CLIP = Contrastive Language-Image Pre-training</b
+        ><b>VAE = Variational Autoencoder</b
+        ><b>U-Net = 多尺度 encoder-decoder</b
+        ><b>UNet2DConditionModel = Diffusers 中的条件 U-Net 实现</b
+        ><b>latent = 潜变量张量</b
+        ><b>denoising strength = 图生图保留原图程度的控制量</b>
+      </div>
+      <div data-architecture="sdxl"></div>
+      <div class="arch-diagram">
+        <div class="arch-title">SD 1.5 与 SDXL 的文本条件路径（两者不同，分开看）</div>
+        <div class="flow wide">
+          <div class="node">prompt<br />string</div>
+          <b class="arrow">→</b>
+          <div class="node alt">Tokenizer<br />input_ids [B,77]</div>
+          <b class="arrow">→</b>
+          <div class="node">
+            SD 1.5：CLIP-L<br />hidden_states[-2] [B,77,768]
+          </div>
+          <b class="arrow">→</b>
+          <div class="node output">
+            c_text [B,77,768]<br />→ 只进 cross-attention
+          </div>
+        </div>
+        <div class="flow wide" style="margin-top:14px">
+          <div class="node">prompt<br />string</div>
+          <b class="arrow">→</b>
+          <div class="node alt">
+            两套 tokenizer<br />input_ids [B,77] × 2
+          </div>
+          <b class="arrow">→</b>
+          <div class="node">
+            SDXL：CLIP-L [B,77,768]<br />+ bigG [B,77,1280]
+          </div>
+          <b class="arrow">→ concat(channel)</b>
+          <div class="node output">
+            c_text [B,77,2048] → cross-attention<br />pooled [B,1280] → 时间/尺寸条件
+          </div>
+        </div>
+        <figcaption>
+          图 I-A1 · 两条路径不能互换：SD 1.5 的 K/V 只有 768
+          维、且没有 pooled 文本条件；SDXL 的 K/V 是 2048 维，并额外有
+          <code>pooled [B,1280]</code> 与 <code>added time/size ids</code>。U-Net
+          预测的是潜空间上的噪声/速度输出，不是 RGB 图片。
+        </figcaption>
+      </div>
+      <div class="panel accent">
+        <h3>c_text 到底是什么：定义、形状、去向</h3>
+        <p>
+          <code>c_text</code> 是“逐 token 的文本条件张量”，由上一步的文本编码器
+          产生，不是 prompt 字符串，也不是单个向量：
+          <b>SD 1.5</b> 为 <code>[B,77,768]</code>（CLIP-L 的
+          <code>hidden_states[-2]</code>）；<b>SDXL</b> 为
+          <code>[B,77,2048]</code>（CLIP-L 768 维与 bigG 1280 维沿最后一维
+          <code>concat(channel)</code>）。它被送到 U-Net 中<b>每一个</b>配置为
+          cross-attention 的 block（SDXL 的 down_block_1、down_block_2、mid_block
+          与 up_block_0/1/2；down_block_0 与 SD 1.5 的 down_block_3 没有
+          cross-attention）。在每个这样的 block 里，当前空间 feature
+          <code>F [B,C,H_s,W_s]</code> 展平成视觉 token 作为
+          <code>Q</code>，<code>c_text</code> 经该 block 自己的
+          <code>to_k</code>/<code>to_v</code> 线性层得到 <code>K,V</code>，计算
+          <code>softmax(QKᵀ/√d)V</code>，再 reshape 回空间 feature 并<b>逐元素相加</b>回该
+          block 的输出。文本只在循环外编码<b>一次</b>；所谓“每步重复”指的是这些
+          cross-attention 在每一个 denoising step 里都会重新读取同一份
+          <code>c_text</code>（读取次数 ≈ 含 cross-attn 的 block 数 × 采样步数），
+          而不是每一步重新编码。
+        </p>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>第 t 步的数据</th>
+              <th>在 U-Net 中的去向</th>
+              <th>是否下一步还用</th>
+            </tr>
+            <tr>
+              <td><code>z_t</code></td>
+              <td>作为当前带噪 latent，经过 Down/Mid/Up 得到预测</td>
+              <td>scheduler 生成新的 <code>z_{t-1}</code> 后继续用</td>
+            </tr>
+            <tr>
+              <td><code>c_text</code></td>
+              <td>在 cross-attention 里生成 K/V，调制视觉 feature</td>
+              <td>同一 prompt 通常每一步复用并重新参与 attention</td>
+            </tr>
+            <tr>
+              <td><code>t</code> 与 added time/size ids</td>
+              <td>变成 time/ADM embedding，注入 ResNet 或条件层</td>
+              <td>每一步的 t 会变；尺寸/裁剪条件通常保持该样本不变</td>
+            </tr>
+          </table>
+        </div>
+      </div>
+      <section class="detail-section">
+        <h2>1. Tokenizer 与文本编码器（SD 1.5 与 SDXL 不同）</h2>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>模块</th>
+              <th>输入</th>
+              <th>内部层</th>
+              <th>输出</th>
+            </tr>
+            <tr>
+              <td>Tokenizer</td>
+              <td>prompt string</td>
+              <td>BPE/词表、特殊 token、padding/truncation</td>
+              <td>input_ids [B,S]</td>
+            </tr>
+            <tr>
+              <td>CLIP-L text encoder<br />（SD 1.5 与 SDXL 都用）</td>
+              <td>ids [B,77]</td>
+              <td>
+                CLIPTextModel：12 层 / hidden 768 / 12 heads；pipeline 取
+                <code>hidden_states[-2]</code>
+              </td>
+              <td>
+                SD 1.5：<code>c_text [B,77,768]</code>（直接作为 K/V）<br />SDXL：其中
+                768 维的一半
+              </td>
+            </tr>
+            <tr>
+              <td>OpenCLIP bigG<br /><b>仅 SDXL</b></td>
+              <td>ids [B,77]</td>
+              <td>CLIPTextModelWithProjection：hidden 1280</td>
+              <td>
+                hidden [B,77,1280] 与 <code>text_embeds [B,1280]</code>（pooled）
+              </td>
+            </tr>
+            <tr>
+              <td>concat(channel)<br /><b>仅 SDXL</b></td>
+              <td>两个 hidden 序列</td>
+              <td>
+                <code>torch.concat([hidden_L, hidden_G], dim=-1)</code>，不做维度相加
+              </td>
+              <td>
+                <code>c_text [B,77,2048]</code> → cross-attention K/V；<br /><code
+                  >pooled [B,1280]</code
+                >
+                → 与 t、size ids 相加后进 ADM 条件
+              </td>
+            </tr>
+          </table>
+        </div>
+        <p>
+          文本 encoder 通常冻结。它只需在 pipeline 开始时把 prompt 编码成
+          <code>c_text</code>；但 <code>c_text</code> 会随每个 denoising step
+          传给 U-Net。每个含 cross-attention 的 block 各有一套
+          <code>to_k</code>/<code>to_v</code>：<code>Q = Wq · visual_feature</code
+          >、<code>K/V = Wk/v · c_text</code
+          >，然后把 <code>softmax(QKᵀ/√d)V</code> 的结果与视觉 feature
+          <b>逐元素相加</b>。所以“文本路径在左边”不是只连到第一次输入，而是同一份条件在每一步、每个相关
+          stage 被重新读取。SDXL 还有第二条条件路径：<code>pooled [B,1280]</code>
+          与 timestep embedding <b>逐元素相加</b>（形状都是
+          <code>[B,1280]</code>），再和 6 维 added time/size ids 拼成的 2816 维向量一起
+          注入每个 ResNet 的 scale/shift。
+        </p>
+      </section>
+      <section class="detail-section">
+        <h2>2. VAE：像素与 latent 的接口</h2>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>路径</th>
+              <th>输入</th>
+              <th>主要模块</th>
+              <th>输出</th>
+            </tr>
+            <tr>
+              <td>Encode</td>
+              <td>RGB x [B,3,H,W]</td>
+              <td>
+                Conv stem → 多个 ResNet/downsample → mean/logvar → sample 或
+                mean
+              </td>
+              <td>z [B,4,H/8,W/8]（SDXL 常见约定）</td>
+            </tr>
+            <tr>
+              <td>Scale</td>
+              <td>z</td>
+              <td>pipeline 使用模型特定 scaling factor</td>
+              <td>送入 U-Net 的 scaled latent</td>
+            </tr>
+            <tr>
+              <td>Decode</td>
+              <td>clean z [B,4,H′,W′]</td>
+              <td>反 scaling → mid ResNet → upsample blocks → Conv</td>
+              <td>RGB [B,3,H,W]</td>
+            </tr>
+          </table>
+        </div>
+        <p>
+          VAE 的下采样倍数决定 latent 网格。SDXL 常见空间压缩比例是 8，因此
+          1024×1024 像素约对应 128×128 latent；768×1024 则约对应 96×128 latent。
+          输入 H/W 通常需要符合下采样倍数；改变 latent H′/W′
+          就能改变输出分辨率，但训练分布和 attention 成本仍限制质量。
+        </p>
+      </section>
+      <section class="detail-section">
+        <h2>3. U-Net 一次 forward：Down 保存 skip，Up 逐级取用</h2>
+        <p>
+          下图以 SDXL（1024×1024 → latent 128×128）为例写出真实张量流。橙色箭头是
+          <b>skip feature 的搬运</b>：Down block 的输出既继续向下传播，也被保存下来送给对应
+          Up block；Up block 内部先做
+          <code>torch.cat([up_input, skip], dim=1)</code>（<b>通道维拼接</b>，要求空间尺寸一致），
+          再由 <code>conv_shortcut</code> 投影回该层通道宽度，之后才与该层内部 ResNet 的
+          残差路径做<b>逐元素相加</b>。这两步是不同运算，不能都写成 “+”。
+        </p>
+        <div class="arch-diagram">
+          <div class="arch-title">SDXL U-Net：Down → Mid → Up 与 skip 合流（形状按官方 config 示例）</div>
+          <div id="sdxl-unet-skeleton" data-skeleton="sdxl"></div>
+          <figcaption>
+            图 I-A2 · SDXL 有 3 个 down block 与 3 个 up block，skip 配对为
+            down_0→up_2、down_1→up_1、down_2→up_0；mid 输出进入 up_0 之前的输入。
+            SD 1.5 有 4 个 down block（<code>[320,640,1280,1280]</code>），其中
+            down_3 是 <code>DownBlock2D</code>（无 cross-attention、无 downsampler），
+            它的输出进入 mid，因此 1.5 的中间 skip 数量与 SDXL 不同。
+            <b>真实 skip 数量、通道与顺序必须读取该 checkpoint 的
+            <code>unet/config.json</code> 并用 <code>pipe.unet.named_modules()</code>
+            核对</b>；本图是官方 config 下的示例，不是所有 SD 模型的通用常数。
+          </figcaption>
+        </div>
+
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>子模块</th>
+              <th>输入</th>
+              <th>输出</th>
+              <th>作用</th>
+            </tr>
+            <tr>
+              <td>ResnetBlock2D</td>
+              <td>x [B,C,H,W] + time emb</td>
+              <td>[B,C′,H,W]</td>
+              <td>Conv/norm/SiLU，注入 timestep 并残差相加</td>
+            </tr>
+            <tr>
+              <td>Transformer2D / spatial attn</td>
+              <td>feature [B,C,H,W]</td>
+              <td>same shape</td>
+              <td>flatten HW tokens，建模空间关系</td>
+            </tr>
+            <tr>
+              <td>CrossAttention</td>
+              <td>Q=latent tokens，K/V=text</td>
+              <td>latent token update</td>
+              <td>把文字条件写入视觉流</td>
+            </tr>
+            <tr>
+              <td>Downsample2D</td>
+              <td>[B,C,H,W]</td>
+              <td>[B,C,⌈H/2⌉,⌈W/2⌉]</td>
+              <td>降低空间分辨率、扩大感受野；只有带 downsampler 的 block 才有</td>
+            </tr>
+            <tr>
+              <td>Upsample2D</td>
+              <td>低分辨率 feature [B,C,H,W]</td>
+              <td>[B,C,2H,2W]</td>
+              <td>先把空间尺寸放大到与 skip 一致，才能做通道维拼接</td>
+            </tr>
+            <tr>
+              <td>
+                通道维拼接<br />（Up block 内的 <code>torch.cat(dim=1)</code>）
+              </td>
+              <td>
+                up_input [B,C_up,H,W] + skip [B,C_skip,H,W]（H/W 必须相等）
+              </td>
+              <td>[B,C_up+C_skip,H,W]</td>
+              <td>
+                <b>concat(channel)</b>，随后由 conv_shortcut 投影回该层通道宽度
+              </td>
+            </tr>
+            <tr>
+              <td>ResNet 残差（含时间条件）</td>
+              <td>
+                h [B,C,H,W] 与 ResNet 分支输出 [B,C,H,W]（形状必须完全相同）
+              </td>
+              <td>[B,C,H,W]</td>
+              <td>
+                <b>residual add</b>（逐元素相加）；时间 embedding 以 scale/shift
+                形式进入这里的 norm
+              </td>
+            </tr>
+          </table>
+        </div>
+      </section>
+      <section class="detail-section">
+        <h2>
+          4. timestep、scheduler 与 CFG：一次 denoising step 的完整输入输出
+        </h2>
+        <p>
+          训练先从 clean latent z0 和噪声 epsilon 构造 zt；U-Net 接收 zt、时间
+          embedding 和 text context，预测 epsilon 或 v。推理从纯噪声
+          <code>z_T</code> 开始，下面的步骤会重复 N 次：当前 latent
+          <code>z_t</code>、当前 timestep <code>t</code>、同一份文本 context
+          <code>c_text</code> 和尺寸/裁剪等 SDXL added condition 一起进入一次
+          U-Net forward；U-Net 在 Down/Mid/Up 的每个相关 block 使用它们，输出
+          <code>model_output_t</code>；最后 scheduler.step 才把它变成下一状态
+          <code>z_{t-1}</code>。文本条件、timestep 和可选控制 residual
+          因此通常是每一步都输入，不是只在第一次输入。CFG 还会对同一个
+          <code>z_t</code> 分别跑 unconditional 与 conditional 两次 forward，再组合
+          <code>eps = eps_u + scale * (eps_c - eps_u)</code>；这是“有条件预测减无条件预测再放大”的
+          代数式，<b>不是把两个 latent 相加</b>。这就是为什么 CFG 通常近似增加一倍 U-Net
+          计算。
+        </p>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>组件</th>
+              <th>输入</th>
+              <th>输出</th>
+            </tr>
+            <tr>
+              <td>noise scheduler</td>
+              <td>训练的 z0、epsilon、t；推理的 timesteps/sigmas</td>
+              <td>训练 zt；推理初始化 zT 与每一步的时间表</td>
+            </tr>
+            <tr>
+              <td>U-Net</td>
+              <td>
+                每一步 zt、t、text context、added time/size ids、可选 control
+                residual
+              </td>
+              <td>model_output_t：noise/v prediction，与 zt 同形状</td>
+            </tr>
+            <tr>
+              <td>scheduler.step</td>
+              <td>model_output_t、t、zt</td>
+              <td>下一步 zt-1；不负责理解 prompt</td>
+            </tr>
+            <tr>
+              <td>CFG</td>
+              <td>uncond output、cond output、scale</td>
+              <td>guidance output，与 latent 同形状</td>
+            </tr>
+          </table>
+        </div>
+      </section>
+      <section class="detail-section" id="finetune">
+        <h2>5. LoRA 在 SDXL 挂哪里</h2>
+        <p>
+          常见 attention LoRA target 是
+          <code>to_q</code
+          >、<code>to_k</code>、<code>to_v</code>、<code>to_out.0</code>；更高容量训练会加入
+          U-Net 中的 feed-forward projection，部分脚本也支持 text encoder
+          LoRA。VAE 通常冻结。准确模块名要从
+          <code>unet.named_modules()</code> 和官方训练脚本确认。
+        </p>
+        <div class="code-block">
+          <span class="code-label">Python · 找 SDXL 候选层</span>
+          <pre><code>for name, module in pipe.unet.named_modules():
+    if name.endswith(("to_q", "to_k", "to_v", "to_out.0")):
+        print(name, type(module).__name__)</code></pre>
+        </div>
+        <p>
+          训练图片通过 VAE Encode 得到 latent；对随机 t 加噪；U-Net 预测
+          target；loss 只对预测和 target 比较。LoRA 梯度更新 attention/MLP 的
+          A/B，不更新原始 U-Net W。
+        </p>
+        <h3>SDXL 要准备什么数据，应该怎么训练</h3>
+        <p>
+          先按目标区分数据：主体身份用同一主体的多角度、多距离、多光照图片；画风用不同内容但风格稳定的图片；构图或产品包装用带明确
+          caption 的完整画面；局部重绘还要增加 source/target/mask
+          三元组。每张图记录文件路径、caption、宽高、裁剪、主体标签、许可证和
+          split，按主体或拍摄批次切分，避免同一张图的近重复同时进入训练和验证。
+        </p>
+        <div class="io-table">
+          <table>
+            <tr>
+              <th>目标</th>
+              <th>推荐样本</th>
+              <th>训练方式</th>
+              <th>冻结范围与验收</th>
+            </tr>
+            <tr>
+              <td>主体/风格</td>
+              <td>20—500 张多样图片 + 精确 caption</td>
+              <td>U-Net LoRA；主体可用 DreamBooth 类 prior preservation</td>
+              <td>冻结 VAE；先只训 attention，验证身份、提示遵循和未见角度</td>
+            </tr>
+            <tr>
+              <td>构图/产品</td>
+              <td>成对或带布局描述的图文样本</td>
+              <td>U-Net LoRA/全量微调；必要时加 ControlNet</td>
+              <td>保留不同背景与负面场景，检查位置、比例和文字</td>
+            </tr>
+            <tr>
+              <td>局部编辑</td>
+              <td>source、target、mask、instruction 四元组</td>
+              <td>inpaint U-Net LoRA 或 ControlNet 分支</td>
+              <td>mask 外区域保持率、边缘融合和编辑成功率</td>
+            </tr>
+          </table>
+        </div>
+        <div class="code-block">
+          <span class="code-label">JSONL · SDXL 图像 LoRA 元数据</span>
+          <pre><code>{"image":"train/subject_001.jpg","caption":"sks person, side profile, studio light","width":1024,"height":1024,"subject":"person_a","license":"owned","split":"train"}
+{"source":"edit/in_004.png","target":"edit/out_004.png","mask":"edit/mask_004.png","instruction":"把杯子改成红色，保留手和桌面","split":"validation"}</code></pre>
+        </div>
+        <p>
+          训练目标仍是随机 timestep 的 epsilon/v prediction：VAE
+          和文本编码器先冻结，图片 latent 加噪后只更新选定的 U-Net
+          LoRA；小数据从 rank 4—16、低学习率和少量 epoch 开始，记录 base
+          revision、分辨率桶、caption 模板、seed、rank/alpha、训练/验证 loss
+          和固定提示图。不要只看 loss，必须与 zero-shot
+          基座比较主体一致性、风格迁移、文字、负面提示和旧能力保持。
+        </p>
+        <section class="detail-section">
+          <h2>6. 最小 pipeline 示例</h2>
+          <div class="code-block">
+            <span class="code-label">Python · Diffusers SDXL</span>
+            <pre><code>import torch
+from diffusers import DiffusionPipeline
+pipe = DiffusionPipeline.from_pretrained(
+    "stabilityai/stable-diffusion-xl-base-1.0",
+    torch_dtype=torch.float16, use_safetensors=True
+).to("cuda")
+image = pipe(
+    "a technical cutaway diagram of a transformer block",
+    width=1024, height=1024, num_inference_steps=30,
+    guidance_scale=5.0, generator=torch.Generator("cuda").manual_seed(7)
+).images[0]
+image.save("sdxl.png")</code></pre>
+          </div>
+        </section>
+      </section>
+      <p>
+        论文与官方实现：<a
+          href="https://arxiv.org/abs/2112.10752"
+          target="_blank"
+          rel="noopener"
+          >Rombach et al., Latent Diffusion (arXiv:2112.10752)</a
+        >
+        ·
+        <a
+          href="https://arxiv.org/abs/2307.01952"
+          target="_blank"
+          rel="noopener"
+          >SDXL (arXiv:2307.01952)</a
+        >
+        ·
+        <a
+          href="https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0"
+          target="_blank"
+          rel="noopener"
+          >SDXL base-1.0 模型卡与 config</a
+        >
+        ·
+        <a
+          href="https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5"
+          target="_blank"
+          rel="noopener"
+          >SD 1.5 模型卡</a
+        >
+        ·
+        <a
+          href="https://github.com/huggingface/diffusers/blob/main/src/diffusers/pipelines/stable_diffusion_xl/pipeline_stable_diffusion_xl.py"
+          target="_blank"
+          rel="noopener"
+          >Diffusers SDXL encode_prompt</a
+        >
+        ·
+        <a
+          href="https://huggingface.co/docs/diffusers/main/en/api/models/unet2d-cond"
+          target="_blank"
+          rel="noopener"
+          >UNet2DConditionModel</a
+        >
+        ·
+        <a
+          href="https://huggingface.co/docs/diffusers/main/en/api/models/autoencoderkl"
+          target="_blank"
+          rel="noopener"
+          >AutoencoderKL</a
+        >
+        ·
+        <a
+          href="https://github.com/Stability-AI/generative-models"
+          target="_blank"
+          rel="noopener"
+          >Stability AI generative models</a
+        >
+      </p>
+    </main>
+    <script src="detail.js"></script>
+  </body>
+</html>
