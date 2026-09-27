@@ -180,6 +180,18 @@ body.dark .df-cond-table table{color:var(--ink)}
 body.dark .df-hint-bar{background:#20362c;border-color:#3b6655}
 /* 防止 .flow 行内节点被压成竖排窄条：给节点设最小宽度，行内允许横向滚动 */
 .detail-reader .flow>.node{flex:1 1 140px;min-width:132px}
+.generated-section{margin:28px 0 0;padding:28px 0 8px;border-top:1px solid var(--line);scroll-margin-top:78px}
+.generated-section>h2{margin:0 0 8px;font-size:24px}
+.generated-intro{margin:0 0 16px;color:var(--muted);font-size:13px;line-height:1.7}
+.page-network{margin-top:26px;padding-top:0;border-top:0}
+.page-network>h2{margin-top:0}
+.generated-inference,.generated-training,.generated-finetune{max-width:100%}
+.generated-finetune .ia-finetune{margin-top:0}
+.df-finetune-data,.df-finetune-loss{margin-top:20px;padding-top:17px;border-top:1px solid var(--line)}
+.df-finetune-data h3,.df-finetune-loss h3{margin:0 0 9px;font-size:16px}
+.df-finetune-data p,.df-finetune-loss p{font-size:12px;line-height:1.7}
+.df-loss-note{color:var(--muted)}
+body.dark .generated-section{border-top-color:#3b6655}
 .detail-reader .arch-diagram>.flow{overflow-x:auto}
 @media(max-width:620px){.detail-reader .flow>.node{min-width:124px}}
 /* 修复 .flow 行内被长箭头标签挤压的问题：标签允许换行但不撑开、节点设最小宽度、整行可横向滚动 */
@@ -279,3 +291,97 @@ body.dark .ns-skip-lbl{fill:#f0d5a5}
 
 .ns-box-plain{fill:#f4f7f8;stroke:#8fa6b0}
 body.dark .ns-box-plain{fill:#1f292c;stroke:#4a6169}
+
+/* ===== U-Net 结构图：响应式三列卡片，主干与 skip 关系分开排版 ===== */
+.ns-board{margin-top:10px;padding:16px 14px 14px;border:1px solid #c7d9d1;border-radius:6px;background:rgba(255,255,255,.72)}
+.ns-board-flow{display:flex;justify-content:center;align-items:center;gap:12px;margin:0 0 13px;color:var(--accent);font-size:12px;font-weight:800}
+.ns-board-flow b{font-size:18px}
+.ns-board-columns{display:grid;grid-template-columns:minmax(0,1fr) 34px minmax(0,.95fr) 34px minmax(0,1fr);gap:8px;align-items:start}
+.ns-board-column{min-width:0}
+.ns-board-column h4{margin:0;color:var(--accent);font-size:13px}
+.ns-board-column-mid h4{color:#675187}
+.ns-board-caption{margin:3px 0 9px;color:var(--muted);font-size:10px;line-height:1.5}
+.ns-board-mid-note{text-align:center}
+.ns-board-connector{display:grid;place-items:center;height:100%;padding-top:190px;color:var(--accent);font-size:24px;font-weight:800}
+.ns-mid-spacer{height:152px}
+.ns-edge{display:flex;flex-direction:column;gap:3px;margin:0 0 8px;padding:9px 10px;border:1px dashed #c9a25c;border-radius:5px;background:#fffaf0}
+.ns-edge b{color:#80521d;font-size:11px}
+.ns-edge code{font:700 10px/1.45 Consolas,"Cascadia Code",monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.ns-edge small{color:#916f3c;font-size:9px;line-height:1.45}
+.ns-edge-output{margin-top:8px;margin-bottom:0}
+.ns-card{display:flex;flex-direction:column;align-items:stretch;width:100%;min-width:0;margin:0;padding:10px 10px 11px;border:1px solid #7fae9c;border-radius:6px;background:#f4faf7;color:var(--ink);font:inherit;text-align:left;cursor:pointer;box-shadow:0 2px 5px rgba(30,64,54,.04);transition:border-color .15s,box-shadow .15s,transform .15s}
+.ns-card:hover,.ns-card:focus-visible{border-color:var(--accent);box-shadow:0 5px 13px rgba(18,111,103,.15);transform:translateY(-1px);outline:none}
+.ns-card-attn{background:#eef6fa;border-color:#9bc5d5}
+.ns-card-mid{background:#f6f1fb;border-color:#9c8bc4}
+.ns-card-title{font-size:11px;font-weight:800;line-height:1.35}
+.ns-card-class{margin-top:3px;color:#49645d;font:700 10px/1.4 Consolas,"Cascadia Code",monospace;overflow-wrap:anywhere}
+.ns-card-class em{font:700 9px "Segoe UI","Microsoft YaHei UI",sans-serif;color:#2c5f78}
+.ns-card-io{display:block;margin-top:5px;padding:4px 5px;border:1px solid rgba(127,174,156,.5);border-radius:3px;background:rgba(255,255,255,.68);font:10px/1.4 Consolas,"Cascadia Code",monospace;overflow-wrap:anywhere}
+.ns-card-io b{color:var(--accent)}
+.ns-card-note{display:block;margin-top:5px;color:var(--muted);font-size:9px;line-height:1.45;overflow-wrap:anywhere}
+.ns-card-hint{display:block;margin-top:6px;color:var(--accent);font-size:9px;font-weight:800}
+.ns-column-arrow{height:22px;display:grid;place-items:center;color:var(--accent);font-size:19px;font-weight:800}
+.ns-skip-panel{margin-top:15px;padding:11px 12px;border:1px solid #e7cc9d;border-radius:5px;background:#fffaf0}
+.ns-skip-panel>strong{display:block;color:#80521d;font-size:11px}
+.ns-skip-panel>p{margin:4px 0 8px;color:#6b4f1c;font-size:10px;line-height:1.6}
+.ns-skip-panel code{font:700 10px Consolas,"Cascadia Code",monospace}
+.ns-skip-row{display:grid;grid-template-columns:54px minmax(0,1fr) 18px minmax(0,1fr) auto;gap:7px;align-items:center;padding:7px 0;border-top:1px dashed #e1c994;font-size:10px}
+.ns-skip-row b{overflow-wrap:anywhere}
+.ns-skip-badge{color:#8a5a16;font:800 9px Consolas,"Cascadia Code",monospace;text-transform:uppercase}
+.ns-skip-arrow{color:#a5701f;font-size:15px;font-weight:800;text-align:center}
+.ns-skip-row code{padding:3px 5px;border:1px solid #d9b87c;border-radius:3px;background:#fff0d9;color:#80521d;font-size:9px;white-space:nowrap}
+.ns-skip-row small{color:#916f3c;font-size:9px;line-height:1.4}
+.ns-skip-note-row{border-top-color:#c9d9d1}
+
+/* 条件路径同样允许换行，不再由固定宽 SVG 撑出页面横向滚动。 */
+.ns-condition-board{margin-top:8px;padding:12px;border:1px solid #c7d9d1;border-radius:5px;background:#f7fbf8}
+.ns-condition-row{display:grid;grid-template-columns:150px minmax(0,1fr);gap:10px;align-items:start;padding:8px 0}
+.ns-condition-row+.ns-condition-row{border-top:1px dashed #cbd8d2}
+.ns-condition-label{padding:8px 9px;border-left:3px solid #9bcbb8;background:#eaf5ef;border-radius:3px}
+.ns-condition-label-xl{border-left-color:#9c8bc4;background:#f1edf8}
+.ns-condition-label b{display:block;color:var(--accent);font-size:11px}
+.ns-condition-label small{display:block;margin-top:3px;color:var(--muted);font-size:9px;line-height:1.45}
+.ns-condition-steps{display:flex;flex-wrap:wrap;align-items:stretch;gap:6px}
+.ns-condition-steps>span,.ns-condition-steps>strong{display:flex;flex:1 1 125px;min-width:0;min-height:43px;align-items:center;justify-content:center;padding:7px 8px;border:1px solid #cbd8d2;border-radius:4px;background:#fff;text-align:center;font-size:10px;line-height:1.45}
+.ns-condition-steps>strong{border-color:#9bcbb8;background:#eaf5ef;color:#31554b}
+.ns-condition-steps>b{align-self:center;color:var(--accent);font-size:16px}
+.ns-condition-steps small{display:block;color:var(--muted);font:9px/1.35 Consolas,"Cascadia Code",monospace}
+.ns-condition-note{margin:3px 0 5px 160px;color:#7a6a3a;font-size:10px;line-height:1.5}
+.ns-condition-note-xl{margin-bottom:0}
+
+/* 模块详情：用流程节点解释每一类子网络，而不是只给一张文字表。 */
+.ns-detail-diagram{margin:0 0 16px;padding:13px 12px;border:1px solid #b8d9ca;border-radius:5px;background:#f7fbf8}
+.ns-detail-title{margin-bottom:9px;color:var(--accent);font-size:12px;font-weight:800}
+.ns-detail-flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:7px}
+.ns-detail-step{display:flex;flex:1 1 135px;min-width:125px;flex-direction:column;justify-content:center;gap:4px;padding:9px 8px;border:1px solid #cbd8d2;border-radius:4px;background:#fff}
+.ns-detail-step b{font-size:10px;line-height:1.35}
+.ns-detail-step small{color:var(--muted);font-size:9px;line-height:1.45;overflow-wrap:anywhere}
+.ns-detail-step.ns-detail-io{border-color:#9bcbb8;background:#eaf5ef}
+.ns-detail-step.ns-detail-resnet{border-color:#c7b6df;background:#f1edf8}
+.ns-detail-step.ns-detail-cross{border-color:#9bc5d5;background:#eef6fa}
+.ns-detail-step.ns-detail-sample{border-color:#d9b87c;background:#fff6e9}
+.ns-detail-step.ns-detail-merge{border-color:#e7cc9d;background:#fff4e5}
+.ns-detail-arrow{align-self:center;color:var(--accent);font-size:18px;font-weight:800}
+.ns-detail-caption{margin:10px 0 0;padding:8px 9px;border-left:3px solid var(--accent);background:#eaf5ef;color:var(--muted);font-size:10px;line-height:1.55}
+.ns-detail-caption b{color:var(--accent)}
+body.dark .ns-board,body.dark .ns-condition-board,body.dark .ns-detail-diagram{background:#1b2923;border-color:#3b6655}
+body.dark .ns-card{background:#20362c;border-color:#3b6655}
+body.dark .ns-card-attn{background:#1e2f38;border-color:#3a6175}
+body.dark .ns-card-mid{background:#282333;border-color:#665585}
+body.dark .ns-card-io,body.dark .ns-condition-steps>span,body.dark .ns-condition-steps>strong,body.dark .ns-detail-step{background:#202824;border-color:#3b6655}
+body.dark .ns-skip-panel{background:#382d1e;border-color:#6c5734}
+body.dark .ns-skip-panel>p,body.dark .ns-skip-row small{color:#f0d5a5}
+body.dark .ns-skip-row code{background:#4a3924;border-color:#6c5734;color:#f0d5a5}
+body.dark .ns-edge{background:#382d1e;border-color:#6c5734}
+body.dark .ns-edge b,body.dark .ns-edge small{color:#f0d5a5}
+body.dark .ns-detail-step.ns-detail-io{background:#20362c}
+body.dark .ns-detail-step.ns-detail-resnet{background:#282333}
+body.dark .ns-detail-step.ns-detail-cross{background:#1e2f38}
+body.dark .ns-detail-step.ns-detail-sample,body.dark .ns-detail-step.ns-detail-merge{background:#382d1e}
+body.dark .ns-detail-caption{background:#20362c}
+html,body{overflow-x:hidden}
+.ns-group{overflow:visible}
+.ns-panel{width:min(980px,calc(100vw - 24px));max-width:none}
+.ns-panel .ia-modal-card{box-sizing:border-box;width:100%;max-height:min(92vh,860px);padding:23px 24px 21px}
+@media(max-width:900px){.ns-board-columns{grid-template-columns:minmax(0,1fr) 28px minmax(0,1fr) 28px minmax(0,1fr);gap:5px}.ns-skip-row{grid-template-columns:48px minmax(0,1fr) 15px minmax(0,1fr);}.ns-skip-row code,.ns-skip-row small{grid-column:2/-1}.ns-skip-row code{justify-self:start}}
+@media(max-width:760px){.ns-board{padding:12px 10px}.ns-board-columns{display:flex;flex-direction:column;gap:11px}.ns-board-connector{height:25px;padding:0;align-self:center;transform:rotate(90deg)}.ns-mid-spacer{height:0}.ns-board-column{width:100%}.ns-skip-row{grid-template-columns:48px minmax(0,1fr) 16px minmax(0,1fr)}.ns-skip-row code,.ns-skip-row small{grid-column:2/-1}.ns-condition-row{display:block}.ns-condition-label{margin-bottom:7px}.ns-condition-note{margin:3px 0 8px}.ns-detail-flow{display:flex;flex-direction:column;gap:5px}.ns-detail-step{flex:0 0 auto;width:100%}.ns-detail-arrow{align-self:center;transform:rotate(90deg);height:17px}}

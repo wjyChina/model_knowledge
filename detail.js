@@ -660,6 +660,49 @@
 
   // 完整 U-Net 结构图：Down 列 → Mid → Up 列，带 skip 折线与全部张量尺寸
   function nsBuild(model) {
+    // 采用响应式 HTML 卡片布局。旧版 SVG 折线在窄窗口会压住卡片文字，
+    // 因此把主干顺序与 skip 关系拆成可读的列和列表。
+    const card = function (b, kind) {
+      return '<button type="button" class="ns-card ns-card-' + kind + (b.attn ? " ns-card-attn" : "") + '" data-ns-block="' + model.key + ':' + b.id + '">' +
+        '<span class="ns-card-title">' + esc(b.title) + '</span>' +
+        '<span class="ns-card-class">' + esc(b.cls) + (b.attn ? ' <em>cross-attn</em>' : '') + '</span>' +
+        '<span class="ns-card-io"><b>in</b> [B, ' + esc(b.inShape) + ']</span>' +
+        '<span class="ns-card-io"><b>out</b> [B, ' + esc(b.outShape) + ']</span>' +
+        '<span class="ns-card-note">' + esc(b.note) + '</span>' +
+        '<span class="ns-card-hint">点击看内部结构</span></button>';
+    };
+    const arrow = '<div class="ns-column-arrow" aria-hidden="true">↓</div>';
+    const mid = '<button type="button" class="ns-card ns-card-mid" data-ns-block="' + model.key + ':mid">' +
+      '<span class="ns-card-title">' + esc(model.midLabel) + '</span>' +
+      '<span class="ns-card-class">UNetMidBlock2DCrossAttn <em>Self + Cross Attention</em></span>' +
+      '<span class="ns-card-io"><b>in</b> ' + esc(model.midIn) + '</span>' +
+      '<span class="ns-card-io"><b>out</b> ' + esc(model.midOut) + '</span>' +
+      '<span class="ns-card-note">' + esc(model.midRes) + '；最低分辨率做全局混合</span>' +
+      '<span class="ns-card-hint">点击看内部结构</span></button>';
+    const down = '<section class="ns-board-column"><h4>Down path</h4><p class="ns-board-caption">从高分辨率到低分辨率，保存多尺度 skip</p>' +
+      '<div class="ns-edge ns-edge-input"><b>① 输入</b><code>' + esc(model.inputLit) + '</code><small>' + esc(model.inputSub) + '</small></div>' +
+      model.downBlocks.map(function (b, i) { return (i ? arrow : '') + card(b, 'down'); }).join('') + '</section>';
+    const middle = '<section class="ns-board-column ns-board-column-mid"><h4>Mid</h4><p class="ns-board-caption">最低分辨率的全局语义混合</p><div class="ns-mid-spacer"></div>' + mid + '<p class="ns-board-caption ns-board-mid-note">ResNet → Self-Attn → Cross-Attn → ResNet</p></section>';
+    const up = '<section class="ns-board-column"><h4>Up path</h4><p class="ns-board-caption">逐级恢复分辨率，先拼接同尺度 skip</p>' +
+      model.upBlocks.map(function (b, i) { return (i ? arrow : '') + card(b, 'up'); }).join('') +
+      '<div class="ns-edge ns-edge-output"><b>② 输出</b><code>' + esc(model.outLabel) + '</code></div></section>';
+    const pairs = model.key === 'sdxl' ? [[0, 2], [1, 1], [2, 0]] : [[0, 3], [1, 2], [2, 1]];
+    let skipRows = pairs.map(function (p, i) {
+      const d = model.downBlocks[p[0]];
+      const u = model.upBlocks[p[1]];
+      return '<div class="ns-skip-row"><span class="ns-skip-badge">skip ' + (i + 1) + '</span><b>' + esc(d.title) + '</b><span class="ns-skip-arrow">→</span><b>' + esc(u.title) + '</b><code>torch.cat(dim=1)</code><small>H/W 对齐后沿通道维拼接</small></div>';
+    }).join('');
+    if (model.key === 'sd15') {
+      const d3 = model.downBlocks[3];
+      skipRows += '<div class="ns-skip-row ns-skip-note-row"><span class="ns-skip-badge">说明</span><b>' + esc(d3.title) + '</b><span class="ns-skip-arrow">→</span><b>mid_block</b><small>无对应 skip；输出直接进入 Mid</small></div>';
+    }
+    return '<div class="ns-board" aria-label="' + esc(model.label) + ' 三列 U-Net 结构图">' +
+      '<div class="ns-board-flow"><span>Down</span><b>→</b><span>Mid</span><b>→</b><span>Up</span></div>' +
+      '<div class="ns-board-columns">' + down + '<div class="ns-board-connector" aria-hidden="true">→</div>' + middle + '<div class="ns-board-connector" aria-hidden="true">→</div>' + up + '</div>' +
+      '<div class="ns-skip-panel"><strong>Skip feature 配对（不是相加）</strong><p>Down 的中间特征被保存；Up 先把当前特征放大到同一 H/W，再与 skip 做 <code>torch.cat(dim=1)</code>，随后由 ResNet 的 shortcut 投影回目标通道数。</p>' + skipRows + '</div></div>';
+
+    /* 旧版 SVG 实现保留在下方作为历史参考，不再执行。 */
+    if (false) {
     const COLW = NS_W;
     const n = Math.max(model.downBlocks.length, model.upBlocks.length);
     const ROWH = 158;
@@ -766,10 +809,20 @@
       '<text class="ns-b" x="' + (xUp + 12) + '" y="' + (yTop - 12) + '">② ' + esc(model.outLabel) + "</text>";
     s += "</svg>";
     return s;
+    }
   }
 
   // 条件编码（CLIP 部分），包含 SD1.5 与 SDXL 的差异
   function nsConditionSvg() {
+    return '<div class="ns-condition-board" role="img" aria-label="SD 1.5 与 SDXL 的文本条件编码">' +
+      '<div class="ns-condition-row"><div class="ns-condition-label"><b>SD 1.5</b><small>一个文本编码器</small></div><div class="ns-condition-steps">' +
+      '<span>prompt 字符串</span><b>→</b><span>CLIP tokenizer<br><small>input_ids [B,77]</small></span><b>→</b><span>CLIPTextModel<br><small>hidden 768，取 hidden_states[-2]</small></span><b>→</b><strong>c_text [B,77,768]<br><small>只作为 Cross-Attention 的 K/V</small></strong></div></div>' +
+      '<p class="ns-condition-note">SD 1.5 没有 pooled 文本条件，也没有 added time/size ids。</p>' +
+      '<div class="ns-condition-row"><div class="ns-condition-label ns-condition-label-xl"><b>SDXL</b><small>两个文本编码器 + pooled 条件</small></div><div class="ns-condition-steps">' +
+      '<span>prompt 字符串</span><b>→</b><span>两套 tokenizer<br><small>input_ids [B,77] × 2</small></span><b>→</b><span>CLIP-L<br><small>hidden 768</small></span><span>+ bigG<br><small>hidden 1280 + pooled 1280</small></span><b>→</b><strong>c_text [B,77,2048]<br><small>concat(channel) → Cross-Attention K/V</small></strong><strong>pooled [B,1280]<br><small>与 t / size ids → ADM scale / shift</small></strong></div></div>' +
+      '<p class="ns-condition-note ns-condition-note-xl">SDXL 的 c_text 与 pooled 是两条不同入口：前者读取视觉 token，后者调制每个 ResNet。</p></div>';
+
+    /* 旧版 SVG 条件图保留在下方作为历史参考，不再执行。 */
     const W = 1130;
     return (
       '<svg class="ns-svg ns-svg-cond" viewBox="0 0 ' + W + ' 236" role="img" aria-label="SD 1.5 与 SDXL 的文本条件编码">' +
@@ -815,6 +868,46 @@
       if (event.target === panel) panel.close();
     });
     return panel;
+  }
+
+  // 模块弹窗中的子结构图：把用户在主图中看到的 block 展开成真实子模块。
+  function nsDetailDiagram(model, id) {
+    const textDim = model.key === 'sdxl' ? '2048' : '768';
+    const step = function (title, body, cls) {
+      return '<div class="ns-detail-step ' + (cls || '') + '"><b>' + esc(title) + '</b><small>' + esc(body) + '</small></div>';
+    };
+    const down = model.downBlocks.filter(function (x) { return x.id === id; })[0];
+    const up = model.upBlocks.filter(function (x) { return x.id === id; })[0];
+    let steps = [];
+    if (id === 'mid') {
+      steps = [
+        step('输入 feature', model.midIn, 'ns-detail-io'),
+        step('ResnetBlock2D', 'Conv2d → GroupNorm → SiLU；timestep / ADM 条件以 scale-shift 注入；residual add', 'ns-detail-resnet'),
+        step('Transformer2DModel', '空间 feature 展平为 H×W 个 token；先 Self-Attention 做空间位置间的信息混合', 'ns-detail-attn'),
+        step('Cross-Attention', 'Q = 视觉 token；K / V = c_text [B,77,' + textDim + ']；attention 输出写回视觉流并 residual add', 'ns-detail-cross'),
+        step('ResnetBlock2D', '再次做 Conv / Norm / SiLU 与时间条件调制；保持通道和空间尺寸', 'ns-detail-resnet'),
+        step('输出 feature', model.midOut, 'ns-detail-io'),
+      ];
+    } else if (down) {
+      steps.push(step('输入 feature', '[B, ' + down.inShape + ']', 'ns-detail-io'));
+      for (let i = 0; i < down.layers; i += 1) {
+        steps.push(step('ResnetBlock2D ' + (i + 1), '当前层卷积 / 归一化 / SiLU；时间条件 scale-shift；残差相加', 'ns-detail-resnet'));
+        if (down.attn) steps.push(step('Transformer2DModel ' + (i + 1), 'Self-Attention → Cross-Attention；Q = feature，K/V = c_text；输出 residual add', 'ns-detail-cross'));
+      }
+      if (down.dsp) steps.push(step('Downsample2D', '3×3 stride=2，把空间尺寸降为约 1/2，输出送入下一个 Down block', 'ns-detail-sample'));
+      steps.push(step('输出 / 保存 skip', '[B, ' + down.outShape + ']', 'ns-detail-io'));
+    } else if (up) {
+      steps.push(step('输入 + skip', 'up_input 与同尺度 skip 沿通道维 torch.cat(dim=1)', 'ns-detail-merge'));
+      for (let i = 0; i < up.layers; i += 1) {
+        steps.push(step('ResnetBlock2D ' + (i + 1), 'shortcut 先把拼接后的通道投影回目标宽度；时间条件 scale-shift；残差相加', 'ns-detail-resnet'));
+        if (up.attn) steps.push(step('Transformer2DModel ' + (i + 1), 'Self-Attention → Cross-Attention；读取 c_text 的 K / V', 'ns-detail-cross'));
+      }
+      if (up.usp) steps.push(step('Upsample2D', '插值 / 卷积把空间尺寸放大约 2 倍，再与下一尺度的 skip 对齐', 'ns-detail-sample'));
+      steps.push(step('输出 feature', '[B, ' + up.outShape + ']', 'ns-detail-io'));
+    }
+    return '<div class="ns-detail-diagram"><div class="ns-detail-title">内部执行顺序</div><div class="ns-detail-flow">' +
+      steps.map(function (s, i) { return (i ? '<span class="ns-detail-arrow" aria-hidden="true">→</span>' : '') + s; }).join('') +
+      '</div><p class="ns-detail-caption"><b>怎么看：</b>ResnetBlock2D 负责局部卷积与时间条件调制；Transformer2DModel 内含 Self-Attention，带条件的 block 还会接 Cross-Attention；Up block 的第一步是通道拼接，Down / Up 的采样层只改变 H/W。</p></div>';
   }
 
   function nsBlockInfo(model, id) {
@@ -866,6 +959,7 @@
     panel.querySelector("h2").textContent = info.title;
     panel.querySelector(".ia-modal-meta").textContent = info.meta;
     panel.querySelector(".ns-panel-body").innerHTML =
+      nsDetailDiagram(model, bid) +
       '<div class="io-table ns-panel-table"><table><tr><th>步骤</th><th>张量流（含形状）</th></tr>' +
       info.rows
         .map(function (r) {
@@ -976,9 +1070,9 @@
       )
       .join("");
     return (
-      '<div class="ia-finetune"><h3>训练与微调：数据、可训练模块、冻结范围、验收</h3><div class="ia-finetune-grid">' +
+      '<div class="ia-finetune"><h3>微调执行清单</h3><div class="ia-finetune-grid">' +
       steps +
-      "</div></div>"
+      '</div><div class="df-finetune-data"><h3>微调数据要求与示例</h3><p>主体 / 风格数据需要图片、精确 caption、尺寸和 split；局部编辑需要 source、target、mask、instruction；构图控制需要 control 图与对齐的 target。按主体或拍摄批次切分，避免近重复图片同时进入训练和验证。</p><div class="io-table"><table><tr><th>目标</th><th>最低字段</th><th>验收重点</th></tr><tr><td>主体 / 风格</td><td>image、caption、width、height、subject、split</td><td>主体一致性、提示遵循、未见角度</td></tr><tr><td>局部编辑</td><td>source、target、mask、instruction、split</td><td>mask 外保持、边缘融合、编辑成功率</td></tr><tr><td>构图 / 控制</td><td>control image、target、caption、布局标注</td><td>位置、比例、文字与背景稳定性</td></tr></table></div><div class="code-block"><span class="code-label">JSONL · SDXL LoRA 样本</span><pre><code>{"image":"train/subject_001.jpg","caption":"sks person, side profile, studio light","width":1024,"height":1024,"subject":"person_a","split":"train"}</code><br /><code>{"source":"edit/in_004.png","target":"edit/out_004.png","mask":"edit/mask_004.png","instruction":"把杯子改成红色，保留手和桌面","split":"validation"}</code></pre></div></div><div class="df-finetune-loss"><h3>微调损失函数</h3><p>微调只改变可训练参数的增量；前向目标与基座保持一致，LoRA 只接收这次误差的梯度。</p><div class="ia-loss-formula"><strong>LoRA 目标</strong><code>L_lora = E[ w(t) · ‖ f_(W+ΔW_lora)(z_t,t,c) − target_t ‖² ]</code></div><p class="df-loss-note"><code>target_t</code> 由 checkpoint 的 <code>prediction_type</code> 决定（epsilon 或 v）；VAE、文本编码器和未选中的 U-Net 权重默认冻结。</p></div></div>'
     );
   }
 
@@ -1052,33 +1146,30 @@
     }
     const stages = spec.stages.map((s, i) => dfStage(s, i)).join("");
     host.innerHTML =
+      '<section class="generated-section generated-inference"><h2>2. 推断流程</h2>' +
+      '<p class="generated-intro">Tokenizer、文本编码器、VAE 和 scheduler 只在这里作为完整推断链路中的步骤出现；它们不是 U-Net 的内部模块。</p>' +
       dfHeader(spec) +
-      '<div class="df-sources">' +
-      spec.sourcesBrief
-        .map(
-          (s) =>
-            '<div class="df-src"><strong>' +
-            esc(s[0]) +
-            "</strong><p>" +
-            s[1] +
-            "</p></div>",
-        )
-        .join("") +
-      "</div>" +
-      '<div class="df-hint-bar"><b>本页分两部分：</b>① 上面是<b>完整网络结构图</b>，可在 SDXL 与 SD 1.5 之间切换，点任意模块格子即可看到该模块内部逐层的输入/输出尺寸；② 下面是<b>按时间顺序的数据流</b>，从第 01 块往下读，每一步都写明输入张量、运算类型与输出形状，循环闭合点在最后的橙色框内。<b>只有内部含多层神经网络的模块才可点击</b>，普通输入、变量与张量变换直接画在主图上。</div>' +
-      '<div class="df-flow">' +
-      stages +
-      "</div>" +
-      dfSkeleton(spec) +
+      '<div class="df-flow">' + stages + "</div>" +
       dfLoop(spec.loop) +
-      dfCondTable(spec) +
-      dfCost(spec) +
+      '<div class="ia-loop-note"><strong>循环闭合：</strong>文本条件在循环外编码一次；每一轮 U-Net 都重新读取 <code>c_text</code>，但只有 <code>z_t</code> 与 <code>t</code> 随 scheduler 更新。<code>t = 0</code> 后才进入 VAE Decode。</div></section>' +
+      '<section class="generated-section generated-training"><h2>3. 训练流程与损失函数</h2>' +
+      '<p class="generated-intro">训练不跑完整采样循环，而是在随机时间点构造一个带噪 latent，只监督 U-Net 对该时间点目标的预测。</p>' +
       dfLoss(spec) +
+      '</section>' +
+      '<section class="generated-section generated-finetune" id="finetune"><h2>4. 微调方式</h2>' +
+      '<p class="generated-intro">优先从 U-Net attention 的 <code>to_q</code>、<code>to_k</code>、<code>to_v</code>、<code>to_out.0</code> 开始挂 LoRA，再按容量需求加入 feed-forward；VAE 和文本编码器默认冻结。</p>' +
       dfFinetune(spec) +
-      dfSources(spec) +
-      dfUnknown(spec) +
-      '<div class="ia-loop-note"><strong>循环怎么看：</strong>固定条件（文本、参考图、mask、音频等）在循环外编码一次，进入循环后每一轮都被重新读取；只有 <code>z_t</code> 与 <code>t</code> 每轮变化。主干预测 → solver 生成 <code>z_{t−1}</code> → 把 <code>z_{t−1}</code> 重新当作 <code>z_t</code> 回到图中标出的那一层；<code>t = 0</code> 时才离开循环进入解码。</div>';
-    dfBindModules(host, spec);
+      '</section>';
+    // 网络结构是独立的第 1 章；把自动生成的第 2～4 章移到它后面，避免章节语义嵌套。
+    const networkSection = host.closest('.page-network');
+    if (networkSection) {
+      const anchor = networkSection.nextSibling;
+      Array.from(host.children).forEach(function (section) {
+        networkSection.parentNode.insertBefore(section, anchor);
+      });
+      host.remove();
+    }
+    dfBindModules(networkSection ? networkSection.parentElement : host, spec);
   }
 
   // ---------------------------------------------------------------------------
