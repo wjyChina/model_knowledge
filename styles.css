@@ -9,3 +9,96 @@ body.dark{--bg:#111b1c;--paper:#1a2829;--ink:#e7f0eb;--muted:#a6b9b2;--line:#314
 .book-roadmap{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);margin:24px 0 28px;overflow:hidden;border-radius:5px}.roadmap-step{display:flex;flex-direction:column;gap:7px;min-height:130px;padding:15px;background:var(--paper)}.roadmap-step span{font-family:Consolas,"Cascadia Code",monospace;color:var(--accent);font-size:11px;font-weight:800}.roadmap-step strong{font-size:14px;line-height:1.35}.roadmap-step small{font-size:11px;color:var(--muted);line-height:1.55}.chapter-rule{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin:18px 0;padding:11px 14px;border-left:3px solid var(--accent);background:var(--accent-soft);font-size:12px}.chapter-rule strong{font-size:12px;color:var(--accent)}.chapter-rule span{color:var(--muted)}
 
 .chapter-glossary{margin:21px 0 28px;border:1px solid var(--line);border-radius:5px;background:var(--paper);overflow:hidden}.chapter-glossary h3{margin:0;padding:12px 16px;background:#edf4ef;color:#31554b;font-size:14px}.glossary-table{display:grid}.glossary-row{display:grid;grid-template-columns:minmax(170px,.8fr) minmax(0,2fr);gap:15px;padding:10px 16px;border-top:1px solid var(--line);align-items:start}.glossary-term b{display:block;font-family:Consolas,"Cascadia Code",monospace;font-size:12px;color:var(--accent)}.glossary-term small{display:block;color:var(--muted);font-size:11px;line-height:1.45;margin-top:2px}.glossary-row p{margin:0!important;font-size:12px!important;line-height:1.65}.mini-flow{display:flex;align-items:center;justify-content:center;gap:7px;flex-wrap:wrap;margin-top:10px;color:var(--accent);font-family:Consolas,"Cascadia Code",monospace;font-size:11px}.mini-flow span{padding:3px 6px;border:1px solid #b8d9ca;border-radius:3px;background:#eff8f3}.mini-flow small{width:100%;text-align:center;color:var(--muted);font-family:inherit;font-size:10px}@media(max-width:620px){.glossary-row{grid-template-columns:1fr;gap:3px}.chapter-glossary h3{font-size:13px}}
+
+/* ===================== 通用模块完整结构：虚线框 + mermaid-lite 网络图 ===================== */
+:root{--ml-box-bg:#ffffff;--ml-box-line:#9bcbb8;--ml-ink:#1e2829;--ml-edge:#2f7768;--ml-edge-dash:#c4863f;--ml-elabel:#47645d;--ml-sub:#9bcbb8;--ml-t-in:#edf5fb;--ml-t-in-l:#afd0e3;--ml-t-cond:#eef7f3;--ml-t-cond-l:#9bcbb8;--ml-t-latent:#fff4e5;--ml-t-latent-l:#d9b87c;--ml-t-core:#f1edf8;--ml-t-core-l:#c7b6df;--ml-t-attn:#eef6fa;--ml-t-attn-l:#9bc5d5;--ml-t-norm:#f3f6f1;--ml-t-norm-l:#b7c9ae;--ml-t-out:#e4f2e6;--ml-t-out-l:#9fc59f;--ml-t-op:#fff8ed;--ml-t-op-l:#d9b87c;--ml-t-warn:#fdeeee;--ml-t-warn-l:#dda3a3}
+body.dark{--ml-box-bg:#1c3934;--ml-box-line:#3c6c5c;--ml-ink:#e7f0eb;--ml-edge:#72d3b5;--ml-edge-dash:#d9a45f;--ml-elabel:#cfe3da;--ml-sub:#3c6c5c;--ml-t-in:#1b2f38;--ml-t-in-l:#2d5a6c;--ml-t-cond:#1d322d;--ml-t-cond-l:#3c6c5c;--ml-t-latent:#3a2c20;--ml-t-latent-l:#735432;--ml-t-core:#2a2438;--ml-t-core-l:#5c4b7a;--ml-t-attn:#1a2f3a;--ml-t-attn-l:#2f5d70;--ml-t-norm:#22322c;--ml-t-norm-l:#40604f;--ml-t-out:#1d3327;--ml-t-out-l:#3f7048;--ml-t-op:#3a2c20;--ml-t-op-l:#735432;--ml-t-warn:#3a2222;--ml-t-warn-l:#7a4a4a}
+.gn-frame{margin:16px 0 18px;padding:14px 14px 12px;border:2px dashed var(--ml-edge);border-radius:7px;background:rgba(255,255,255,.55)}
+body.dark .gn-frame{background:rgba(255,255,255,.03)}
+.gn-frame-head{display:flex;flex-wrap:nowrap;justify-content:space-between;align-items:flex-start;gap:10px;padding-bottom:9px;margin-bottom:11px;border-bottom:1px dashed var(--line)}
+.gn-frame-head>div{flex:1 1 auto;min-width:0}
+.gn-frame-head strong{display:block;font-size:13px;color:var(--ink)}
+.gn-frame-head small{display:block;margin-top:4px;color:var(--muted);font-size:11px;line-height:1.6;font-weight:400}
+.gn-badge{flex:none;padding:4px 9px;border:1px dashed var(--ml-edge);border-radius:3px;background:var(--accent-soft);color:var(--accent);font:700 10px/1.5 "Segoe UI","Microsoft YaHei UI",sans-serif}
+.gn-frame .ml-wrap{margin:0}
+.gn-legend{display:flex;flex-wrap:wrap;gap:6px 14px;margin:10px 0 0;color:var(--muted);font-size:10px}
+.gn-legend i{display:inline-block;width:11px;height:11px;margin-right:4px;border:1px solid var(--ml-box-line);border-radius:2px;background:var(--ml-box-bg);vertical-align:-1px}
+.gn-legend i.gn-solid{border-style:solid;border-color:var(--ml-edge)}
+.gn-legend i.gn-dash{border-style:dashed;border-color:var(--ml-edge-dash)}
+.gn-note{margin:10px 0 0;padding:8px 10px;border-left:3px solid var(--ml-edge-dash);background:var(--amber-soft);color:var(--muted);font-size:11px;line-height:1.65}
+.gn-note b{color:var(--ink)}
+.gn-link{display:inline-block;margin-top:8px;font-size:11px;font-weight:700;color:var(--accent)}
+.ml-wrap{margin:8px 0 0}
+.ml-graph{overflow-x:auto;padding:2px 0 4px}
+.ml-svg{display:block;max-width:100%;height:auto;margin:0 auto}
+.ml-node .ml-box{fill:var(--ml-box-bg);stroke:var(--ml-box-line);stroke-width:1.5}
+.ml-node-text{font:400 12px "Segoe UI","Microsoft YaHei UI",sans-serif;fill:var(--ml-ink)}
+/* ml-sub 只用于“子程序”形状的两条竖线；数学下标用 ml-msub / ml-msup，
+   必须继承文字颜色、不能描边（否则下标会被染成彩色）。 */
+line.ml-sub{stroke:var(--ml-sub);stroke-width:1.2}
+.ml-msub,.ml-msup{fill:inherit;stroke:none;font-weight:inherit}
+.ml-edge{stroke:var(--ml-edge);stroke-width:2}
+.ml-edge-dashed{stroke:var(--ml-edge-dash);stroke-dasharray:5 4}
+.ml-edge-thick{stroke-width:3}
+.ml-edge-label rect{fill:var(--paper);stroke:var(--line);stroke-width:1}
+.ml-edge-label text{font:700 10px "Segoe UI","Microsoft YaHei UI",sans-serif;fill:var(--ml-elabel)}
+.ml-tone-in .ml-box{fill:var(--ml-t-in);stroke:var(--ml-t-in-l)}
+.ml-tone-cond .ml-box{fill:var(--ml-t-cond);stroke:var(--ml-t-cond-l)}
+.ml-tone-latent .ml-box{fill:var(--ml-t-latent);stroke:var(--ml-t-latent-l)}
+.ml-tone-core .ml-box{fill:var(--ml-t-core);stroke:var(--ml-t-core-l)}
+.ml-tone-attn .ml-box{fill:var(--ml-t-attn);stroke:var(--ml-t-attn-l)}
+.ml-tone-norm .ml-box{fill:var(--ml-t-norm);stroke:var(--ml-t-norm-l)}
+.ml-tone-out .ml-box{fill:var(--ml-t-out);stroke:var(--ml-t-out-l)}
+.ml-tone-op .ml-box{fill:var(--ml-t-op);stroke:var(--ml-t-op-l);stroke-dasharray:4 3}
+.ml-tone-warn .ml-box{fill:var(--ml-t-warn);stroke:var(--ml-t-warn-l)}
+.ml-src{margin-top:9px}
+.ml-src summary{cursor:pointer;color:var(--accent);font:700 11px "Segoe UI","Microsoft YaHei UI",sans-serif}
+.ml-src pre{margin:8px 0 0;padding:10px 12px;border:1px solid var(--line);border-radius:4px;background:var(--code);color:var(--code-ink);font:11px/1.65 Consolas,"Cascadia Code",monospace;overflow-x:auto;white-space:pre}
+
+/* ===================== 数学排版：上下标 + $...$ LaTeX 子集 ===================== */
+sub,sup{font-size:.72em;line-height:0;position:relative;vertical-align:baseline;font-style:normal}
+sub{bottom:-.24em}
+sup{top:-.48em}
+.m-math{font-family:"Cambria Math","Latin Modern Math","Times New Roman",Georgia,serif;font-size:1.03em}
+/* 页面里已有更具体的选择器（例如 .formula-row span）会给 span 加浅色底和等宽字体，
+   这里用双类名提高优先级，保证公式本身不再被套上第二层底、也不被改回等宽字体。 */
+.m-math.m-math{font-family:"Cambria Math","Latin Modern Math","Times New Roman",Georgia,serif;font-size:1.03em;background:transparent;border:0;padding:0;color:inherit}
+.m-math.m-math *{background:transparent}
+body.dark .formula-row span{background:#1f2b28;border-color:var(--line)}
+.m-math i{font-family:inherit;font-style:italic}
+.m-math .m-greek{font-style:normal}
+.m-math .m-op,.m-math .m-delim{font-style:normal;padding:0 .06em}
+.m-math .m-op-name,.m-math .m-rm{font-style:normal;padding:0 .12em}
+.m-frac{display:inline-flex;flex-direction:column;vertical-align:-.44em;text-align:center;margin:0 .16em;font-size:.94em;line-height:1.16}
+.m-frac-n{padding:0 .24em;border-bottom:1px solid currentColor}
+.m-frac-d{padding:0 .24em}
+.m-sqrt{white-space:nowrap}
+.m-sqrt-sign{padding-right:.06em}
+.m-sqrt-body{border-top:1px solid currentColor;padding:.1em .18em 0}
+.m-sqrt-deg{font-size:.58em;vertical-align:.72em}
+.m-acc{position:relative;display:inline-block;padding-top:.14em}
+.m-acc-base{display:inline-block}
+.m-acc::after{position:absolute;left:0;right:0;top:0;text-align:center;line-height:1;pointer-events:none}
+.m-acc-bar::after{content:"";border-top:1.5px solid currentColor;top:.02em}
+.m-acc-hat::after{content:"^";font-size:.82em;top:-.04em}
+.m-acc-tilde::after{content:"~";font-size:.92em;top:-.02em}
+.m-acc-vec::after{content:"→";font-size:.62em;top:-.12em}
+.m-acc-dot::after{content:"·";top:-.04em}
+.m-acc-ddot::after{content:"··";font-size:.8em;letter-spacing:-.06em;top:-.1em}
+body.dark sub,body.dark sup{color:inherit}
+
+@media(max-width:620px){.gn-frame{padding:11px 10px}.gn-frame-head{flex-direction:column}.gn-frame-head .gn-badge{align-self:flex-start}}
+
+/* ============ 左侧导航：跟随页面滚动，且目录本身可上下滑动 ============ */
+/* 目录是独立滚动区，active 项由 app.js 的 keepTocVisible() 滚到可视区中间，
+   所以拖动页面滚动条时左侧导航会跟着上下滑动；这里再把滚动条做得可见、好拖。 */
+#toc{min-height:110px;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#b9c9c3 transparent}
+#toc::-webkit-scrollbar{width:9px}
+#toc::-webkit-scrollbar-track{background:transparent}
+#toc::-webkit-scrollbar-thumb{background:#c6d4ce;border-radius:5px;border:2px solid transparent;background-clip:content-box}
+#toc::-webkit-scrollbar-thumb:hover{background:#a3b8b0;background-clip:content-box}
+body.dark #toc{scrollbar-color:#3d5a52 transparent}
+body.dark #toc::-webkit-scrollbar-thumb{background:#3d5a52;background-clip:content-box}
+body.dark #toc::-webkit-scrollbar-thumb:hover{background:#4d6f65;background-clip:content-box}
+/* 视口很矮时（笔记本横屏、分屏），改成整条侧栏一起滚动，避免目录被压到看不见。 */
+@media(max-height:600px){.sidebar{overflow-y:auto}#toc{flex:0 0 auto;min-height:0;overflow:visible}.sidebar-foot{margin-top:10px}}

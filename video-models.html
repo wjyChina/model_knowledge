@@ -6,6 +6,8 @@
     <title>视频模型与功能详解 | 生成模型工程手册</title>
     <link rel="stylesheet" href="styles.css" />
     <link rel="stylesheet" href="detail.css" />
+    <script src="mathlite.js"></script>
+    <script src="mermaid-lite.js"></script>
     <script defer src="detail.js"></script>
   </head>
   <body>
@@ -651,7 +653,7 @@
               <td>MiniMax H3</td>
               <td>视觉 24（f16t4d24）</td>
               <td>4×（patch 1×2×2 后 token 空间 32×、时间 4×）</td>
-              <td>33B dense single-stream，含约 13B AdaLN 参数</td>
+              <td>官方 33B dense single-stream，含约 13B AdaLN 参数（指原版权重；社区 int8 剪枝 repack 实测 AdaLN ≈43.65M，见 <a href="video-h3.html">H3 专页</a>）</td>
               <td>官方公告可核验（见 <a href="video-h3.html">H3 专页</a>）</td>
             </tr>
           </table>

@@ -44,6 +44,16 @@
       .replace(/>/g, "&gt;");
   }
 
+  // Catalog text is local, but a small allowlist keeps intentional inline code
+  // and emphasis readable without allowing arbitrary markup into the page.
+  function rich(text) {
+    return esc(text == null ? "" : text)
+      .replace(/&lt;(\/?)code&gt;/g, "<$1code>")
+      .replace(/&lt;(\/?)b&gt;/g, "<$1b>")
+      .replace(/&lt;(\/?)strong&gt;/g, "<$1strong>")
+      .replace(/&lt;br\s*\/??&gt;/g, "<br />");
+  }
+
   // --- 主图节点 ------------------------------------------------------------
   // kind: input | external | process | module | condition | state | loop | output | note
   // module 节点必须自带 detail（输入/输出/作用/何时重复/内部图），因为它代表多层网络。
@@ -155,11 +165,11 @@
     return (
       '<div class="df-cond-panel"><h3>条件与状态：哪些是固定条件，哪些每一步都在变</h3>' +
       "<p>" +
-      esc(spec.conditionsNote || "") +
+      rich(spec.conditionsNote || "") +
       "</p>" +
-      '<div class="df-cond-table"><table><tr><th>变量</th><th>在哪一步产生</th><th>是否每次循环重新计算</th><th>在主干里被谁读取</th></tr>' +
+      '<div class="df-cond-table"><table><thead><tr><th>变量</th><th>在哪一步产生</th><th>是否每次循环重新计算</th><th>在主干里被谁读取</th></tr></thead><tbody>' +
       rows +
-      "</table></div></div>"
+      "</tbody></table></div></div>"
     );
   }
 
@@ -192,16 +202,16 @@
           "</td><td>" +
           s.links +
           "</td><td>" +
-          esc(s.evidence) +
+          rich(s.evidence) +
           "</td></tr>",
       )
       .join("");
     return (
       '<div class="df-cond-panel"><h3>论文与 checkpoint 对照：哪些结论有依据</h3>' +
       "<p>论文说明设计与训练结论，官方代码 / config 说明某个 checkpoint 的实际形状；“未核实”的部分必须按最后一列给出的字段核对，不能按推测填写。</p>" +
-      '<div class="df-cond-table"><table><tr><th>结论 / 变量</th><th>来源</th><th>能证实到什么程度</th></tr></tbody>' +
+      '<div class="df-cond-table"><table><thead><tr><th>结论 / 变量</th><th>来源</th><th>能证实到什么程度</th></tr></thead><tbody>' +
       rows +
-      "</table></div></div>"
+      "</tbody></table></div></div>"
     );
   }
 
@@ -209,7 +219,7 @@
     if (!spec.unknown || !spec.unknown.length) return "";
     return (
       '<div class="df-unknown"><strong>未公开 / 需按 checkpoint 核验的边界（不得当作已知事实）</strong><ul><li>' +
-      spec.unknown.map((u) => esc(u)).join("</li><li>") +
+      spec.unknown.map((u) => rich(u)).join("</li><li>") +
       "</li></ul></div>"
     );
   }
@@ -248,12 +258,190 @@
     return modal;
   }
 
+  // --- 通用模块的完整结构（gn-*） -----------------------------------------
+  // 有一类模块属于“通用模块”（时间因果视频 VAE、音频 VAE、多模态条件编码器、
+  // CLIP/T5 文本编码器、单流 AdaLN 主干……），checkpoint 只公开压缩率或“取第 N 层”
+  // 这类事实，不公开逐层结构。这里统一按通用参考实现画出完整网络，并放进虚线框：
+  // 虚线框表示“框内就是一个完整结构”，而不是“未公开的示意图”。
+  // mermaid 源码由站点内置的 mermaid-lite.js 渲染，同时保留源码供复制。
+  function gnBlock(spec) {
+    if (!spec || !spec.mermaid) return "";
+    return (
+      '<div class="gn-frame">' +
+      '<div class="gn-frame-head"><div><strong>完整结构 · ' +
+      esc(spec.title) +
+      "</strong><small>" +
+      rich(spec.note || "") +
+      "</small></div><span class=\"gn-badge\">虚线框内＝一个完整结构</span></div>" +
+      '<pre class="mermaid-lite" data-ml-label="' +
+      esc(spec.title) +
+      '">' +
+      esc(spec.mermaid) +
+      "</pre>" +
+      (spec.facts ? '<p class="gn-note">' + spec.facts + "</p>" : "") +
+      (spec.table
+        ? '<div class="table-wrap"><table><thead><tr>' +
+          spec.table.head
+            .map(function (cell) {
+              return "<th>" + cell + "</th>";
+            })
+            .join("") +
+          "</tr></thead><tbody>" +
+          spec.table.rows
+            .map(function (row) {
+              return (
+                "<tr>" +
+                row
+                  .map(function (cell) {
+                    return "<td>" + cell + "</td>";
+                  })
+                  .join("") +
+                "</tr>"
+              );
+            })
+            .join("") +
+          "</tbody></table></div>"
+        : "") +
+      '<p><a class="gn-link" href="' +
+      esc(spec.linkHref || "index.html#generic-structure") +
+      '" target="_blank" rel="noopener">' +
+      esc(spec.linkText || "通用模块图鉴：整机结构（U-Net / DiT / VAE / 文本塔）→") +
+      "</a></p></div>"
+    );
+  }
+
+  // --- 通用模块结构库（可被模块弹窗和正文插槽共用） -------------------------
+  // 页面正文里写 <div data-generic="image-vae"></div> 即可插入同一张完整结构图，
+  // 避免同一张图在正文和弹窗里出现两种不一致的画法。
+  const genericStructures = {
+    "image-vae": {
+      title: "图像 VAE（AutoencoderKL）",
+      note:
+        "图像 VAE 的结构在 checkpoint 里可以直接读到（SDXL：block_out_channels=[128,256,512,512]、layers_per_block=2、latent_channels=4、scaling_factor=0.13025），所以框内是带具体数字的完整结构，不是“未公开的示意”。",
+      mermaid: [
+        "flowchart TD",
+        '  x["RGB 图像 x<br/>[B,3,H,W]"]:::in --> cin["conv_in（3→128, 3×3）<br/>[B,128,H,W]"]:::core',
+        '  cin --> e1["Encoder Down1：2×ResnetBlock2D<br/>+ Downsample2D<br/>[B,128,H/2,W/2]"]:::core',
+        '  e1 --> e2["Encoder Down2：2×ResnetBlock2D<br/>+ Downsample2D<br/>[B,256,H/4,W/4]"]:::core',
+        '  e2 --> e3["Encoder Down3：2×ResnetBlock2D<br/>+ Downsample2D<br/>[B,512,H/8,W/8]"]:::core',
+        '  e3 --> e4["Encoder Down4：2×ResnetBlock2D（不再下采样）<br/>[B,512,H/8,W/8]"]:::core',
+        '  e4 --> mid["Mid block：ResnetBlock2D + Self-Attention + ResnetBlock2D<br/>[B,512,H/8,W/8]"]:::attn',
+        '  mid --> cout["conv_norm_out + SiLU + conv_out（512→2C）<br/>+ quant_conv（1×1 卷积）"]:::core',
+        '  cout --> head["μ, logσ² [B,4,H/8,W/8]"]:::out',
+        '  head --> sample["z = μ + σ ⊙ ε，再乘 scaling_factor<br/>（SDXL：0.13025）"]:::op',
+        '  sample --> pack["按主干取用：U-Net 直接用 [B,4,H/8,W/8]<br/>DiT 类：2×2 pack → [B,N,4·p²] token"]:::latent',
+        '  sample --> dec["Decoder：post_quant_conv → conv_in<br/>Mid block → 4×（Upsample2D + 3×ResnetBlock2D）<br/>每级拼接同尺度 skip"]:::core',
+        '  dec --> dout["conv_norm_out + SiLU + conv_out（128→3）→ tanh<br/>[B,3,H,W]"]:::out',
+        "  e3 -.->|skip| dec",
+        "  e2 -.->|skip| dec",
+        "  e1 -.->|skip| dec",
+      ].join("\n"),
+      facts:
+        "<b>为什么解码器每级是 3 个 ResnetBlock：</b>编码器每级输出 2 个 ResnetBlock 的结果，解码器要在同一级把 <code>torch.cat([up_feature, skip], dim=1)</code> 接回来后继续计算，所以 Diffusers 的 <code>UpDecoderBlock2D</code> 默认是 <code>layers_per_block + 1 = 3</code> 个 ResnetBlock。<b>必须按 checkpoint 读的部分：</b>latent 通道（SDXL 是 4，SD3 / FLUX / Qwen-Image 是 16）、<code>scaling_factor</code>、通道数与每级 block 数。",
+      linkHref: "index.html#atlas-image-vae",
+      linkText: "通用模块图鉴 14：图像 VAE 的完整张量级结构 →",
+    },
+    "unet-tensor": {
+      title: "SDXL U-Net（张量级，含 skip 合流）",
+      note:
+        "以 1024×1024 → latent 128×128 为例，按 stable-diffusion-xl-base-1.0 的 unet/config.json 画出 Down / Mid / Up 的逐级张量形状；橙色虚线是 skip feature 的搬运，Up block 内部先 cat 再投影。",
+      mermaid: [
+        "flowchart TD",
+        '  x["latent z_t [B,4,128,128]<br/>+ t（time embedding）+ c_text [B,77,2048]"]:::in --> cin["conv_in 3×3<br/>[B,320,128,128]"]:::core',
+        '  cin --> d0["down_block_0 · DownBlock2D<br/>2×ResnetBlock2D（无 cross-attn、不下采样）<br/>skip0 [B,320,128,128]"]:::norm',
+        '  d0 --> d1["down_block_1 · CrossAttnDownBlock2D<br/>2×（Resnet → Self-Attn → Cross-Attn → Resnet）<br/>skip1 [B,640,64,64] → Downsample2D"]:::attn',
+        '  d1 --> d2["down_block_2 · CrossAttnDownBlock2D<br/>2×（Resnet → Self-Attn → Cross-Attn → Resnet）<br/>skip2 [B,1280,32,32]（最后一层不下采样）"]:::attn',
+        '  d2 --> mid["mid_block · UNetMidBlock2DCrossAttn<br/>Resnet → Self-Attn → Cross-Attn → Resnet<br/>[B,1280,32,32]"]:::attn',
+        '  mid --> u0["up_block_0 · CrossAttnUpBlock2D<br/>cat(mid, skip2) = 2560 → conv_shortcut → 3×（Resnet + Cross-Attn）<br/>Upsample2D → [B,1280,64,64]"]:::core',
+        '  u0 --> u1["up_block_1 · CrossAttnUpBlock2D<br/>cat(up0, skip1) = 1920 → 3×（Resnet + Cross-Attn）<br/>Upsample2D → [B,640,128,128]"]:::core',
+        '  u1 --> u2["up_block_2 · CrossAttnUpBlock2D<br/>cat(up1, skip0) = 960 → 3×（Resnet + Cross-Attn）<br/>最后一层不上采样 → [B,320,128,128]"]:::core',
+        '  u2 --> cout["conv_norm_out + SiLU + conv_out 3×3<br/>eps / v [B,4,128,128]（与 z_t 同形状）"]:::out',
+        "  d2 -.->|skip2 1280@32| u0",
+        "  d1 -.->|skip1 640@64| u1",
+        "  d0 -.->|skip0 320@128| u2",
+      ].join("\n"),
+      facts:
+        "<b>三处最容易写错的地方：</b>① Up block 每级是 <code>layers_per_block + 1 = 3</code> 个 Resnet（要接住同尺度 skip），Down block 只有 2 个；② skip 是<b>沿通道维拼接</b>（<code>torch.cat([up, skip], dim=1)</code>），拼接后的通道数先被第一层 Resnet 的 <code>conv_shortcut</code> 投回该级宽度，再走残差，<b>不是逐元素相加</b>；③ <code>c_text</code> 只在含 cross-attn 的 block 里作为 K/V 被读取，<code>t</code> 与 pooled 条件经 time embedding 以 scale/shift 注入每个 Resnet。分辨率变化只由 <code>Downsample2D</code> / <code>Upsample2D</code> 承担。",
+      table: {
+        head: ["对比项", "SDXL（3 down / 3 up）", "SD 1.5（4 down / 4 up）"],
+        rows: [
+          [
+            "block 类型",
+            "<code>down=[DownBlock2D, CrossAttnDownBlock2D, CrossAttnDownBlock2D]</code>",
+            "<code>down=[CrossAttnDownBlock2D ×3, DownBlock2D]</code>（最后一级无 cross-attn）",
+          ],
+          [
+            "通道",
+            "<code>block_out_channels=[320,640,1280]</code>；up 通道 <code>[1280,640,320]</code>",
+            "<code>block_out_channels=[320,640,1280,1280]</code>；up 通道 <code>[1280,1280,640,320]</code>",
+          ],
+          [
+            "空间链",
+            "128 → 64 → 32，再 32 → 64 → 128",
+            "128 → 64 → 32 → 16，再 16 → 32 → 64 → 128",
+          ],
+          [
+            "文本条件",
+            "<code>c_text [B,77,2048]</code>（CLIP-L + bigG）+ <code>pooled [B,1280]</code> + added time/size ids",
+            "<code>c_text [B,77,768]</code>（只有 CLIP-L），没有 pooled 条件",
+          ],
+          [
+            "<code>cross_attention_dim</code>",
+            "2048",
+            "768",
+          ],
+        ],
+      },
+      linkHref: "index.html#atlas-unet",
+      linkText: "通用模块图鉴 12：U-Net 的多尺度 skip 结构怎么读 →",
+    },
+    "dit-tensor": {
+      title: "SD3.5-large MMDiT 主干（张量级）",
+      note:
+        "以 1024×1024 → 16 通道 latent 128×128、patch 2 为例，按 SD3.5-large 的 transformer/config.json 画出从 patch 化到 velocity 输出的完整主干；图像流与文本流只在每个 block 的 attention 内部沿序列维合并。",
+      mermaid: [
+        "flowchart TD",
+        '  x["latent z_t [B,16,128,128]<br/>+ t / sigma + pooled [B,2048]"]:::in --> p["PatchEmbed 2×2：每块 16×2×2 = 64 个数<br/>[B,4096,64] → Linear → [B,4096,2432]<br/>+ 位置编码（pos_embed_max_size=192，按网格插值）"]:::core',
+        '  c["文本条件 c<br/>CLIP-L 768 与 CLIP-G 1280 → concat(channel) → [B,77,2048]<br/>T5-XXL 4096 → 拼接 → context_embedder → [B,N_txt,2432]"]:::cond --> b',
+        '  p --> b["JointTransformerBlock ×38（D=2432 = heads 38 × head_dim 64）<br/>每个 block：图像 to_q/k/v、文本 add_q/k/v 各自投影<br/>→ concat(seq) 做一次联合 attention → split(seq)"]:::attn',
+        '  b --> n["norm_out（AdaLN，由 t + pooled 生成 scale/shift）<br/>→ proj_out（2432 → 64）<br/>[B,4096,64]"]:::out',
+        '  n --> unp["Unpatchify 2×2：每个 token 还原成一个 patch<br/>velocity [B,16,128,128]"]:::out',
+        '  unp --> s["solver 更新 → z_{t-1}<br/>回到第 1 个 block；条件 c 只在循环外编码一次，每步重新读取"]:::op',
+      ].join("\n"),
+      facts:
+        "<b>读这张图先分清三件事：</b>① 主干只用图像 token 走输出头——文本 token 参与 attention，但不进 <code>proj_out</code>；② <code>N_img = (H/8/p) × (W/8/p)</code>，分辨率翻倍 token 数变 4 倍，是显存和训练分布的主要约束；③ 时间步与 pooled 条件走 <b>AdaLN 调制</b>，<code>c_text</code> 走 attention 的 K/V，两条入口不能互换。图中数字来自 SD3.5-large；SD3-medium 等变体的层数、宽度与文本编码器组合不同，必须重读 <code>transformer/config.json</code>。",
+      linkHref: "index.html#basics-patchify",
+      linkText: "基础知识 §2：patchify / token 数与 DiT 主干 →",
+    },
+    "dit-block": {
+      title: "MMDiT 单个 JointTransformerBlock 内部（张量级）",
+      note:
+        "38 个 block 同构，差别只在最后一个 block 不再计算文本侧 FFN（<code>context_pre_only</code>）。框内是 Diffusers 官方实现的真实顺序：双流各自投影 → 序列维拼接 → 一次联合 attention → 拆流 → 各自 FFN。",
+      mermaid: [
+        "flowchart TD",
+        '  i["image x [B,4096,2432] ｜ text c [B,N_txt,2432]"]:::in --> n1["norm1 / norm1_context（AdaLN-Zero）<br/>由 t + pooled 生成 scale / shift / gate"]:::norm',
+        '  n1 --> qkv["图像：to_q / to_k / to_v → Q_i,K_i,V_i [B,38,4096,64]<br/>文本：add_q_proj / add_k_proj / add_v_proj → Q_t,K_t,V_t [B,38,N_txt,64]"]:::core',
+        '  qkv --> rms["qk_norm = rms_norm：只作用在 Q / K 上"]:::op',
+        '  rms --> cat["concat(seq, dim=2)：Q = [Q_i ‖ Q_t]，K、V 同理<br/>[B,38,4096+N_txt,64]"]:::latent',
+        '  cat --> attn["softmax(QKᵀ/√64)·V（一次联合 attention）<br/>→ flatten → [B,4096+N_txt,2432]"]:::attn',
+        '  attn --> sp["split(seq)：image = [:, :4096]，text = [:, 4096:]"]:::op',
+        '  sp --> r1["图像 to_out[0] → residual add；文本 to_add_out → residual add<br/>x₁ = x + Attn(x)、c₁ = c + Attn(c)"]:::core',
+        '  r1 --> ff["各自 norm2 → FFN（2432 → 9728 → 2432，GELU）→ residual add<br/>最后一个 block 只算图像侧"]:::core',
+        '  ff --> o["更新后的 image / text token，形状不变<br/>送入下一个 block"]:::out',
+      ].join("\n"),
+      facts:
+        "<b>图中只有三处 “+”，而且都是逐元素相加：</b>AdaLN 的残差、attention 输出投影后的残差、FFN 后的残差——三者都要求形状完全相同。跨模态交换信息只发生在 <code>concat(seq)</code> 之后的那一次 attention 里：文本不是被广播给每个图像 token，而是作为 K/V 被读取；最后一个 block 之后只取图像 token 走 <code>norm_out</code> + <code>proj_out</code>。",
+      linkHref: "index.html#atlas-dit",
+      linkText: "通用模块图鉴 13：DiT / 联合注意力与条件路径 →",
+    },
+  };
+
   function dfBindModules(host, spec) {
     const buttons = host.querySelectorAll("[data-df-module]");
     if (!buttons.length) return;
     const modal = dfModal();
     buttons.forEach((button) => {
-      button.addEventListener("click", () => {
+      const openModule = () => {
         const detail = spec.modules[button.dataset.dfModule];
         if (!detail) return;
         modal.querySelector(".ia-modal-kicker").textContent =
@@ -261,7 +449,7 @@
         modal.querySelector("h2").textContent = detail.title;
         modal.querySelector(".ia-modal-meta").textContent = detail.meta || "";
         modal.querySelector(".ia-module-diagram").innerHTML =
-          detail.diagram || "";
+          (detail.diagram || "") + gnBlock(detail.generic);
         ["input", "output", "role", "repeat"].forEach((field) => {
           const target = modal.querySelector('[data-df="' + field + '"]');
           target.textContent = (detail[field] || []).join(" ");
@@ -272,7 +460,18 @@
           : "";
         if (typeof modal.showModal === "function") modal.showModal();
         else modal.setAttribute("open", "");
-      });
+        if (window.MermaidLite) window.MermaidLite.renderAll(modal);
+        if (window.MathLite) window.MathLite.renderIn(modal);
+      };
+      button.addEventListener("click", openModule);
+      if (button.tagName.toLowerCase() !== "button") {
+        button.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openModule();
+          }
+        });
+      }
     });
   }
 
@@ -284,27 +483,27 @@
     const H = sd15 ? 520 : 452;
     const rows = sd15
       ? [
-          { name: "down_block_0 (CrossAttnDownBlock2D)", shape: "[B,320,128,128]", sub: "含 cross-attn · 无 downsampler" },
+          { name: "down_block_0 (CrossAttnDownBlock2D)", shape: "[B,320,128,128]", sub: "含 cross-attn · downsampler" },
           { name: "down_block_1 (CrossAttnDownBlock2D)", shape: "[B,640,64,64]", sub: "含 cross-attn · downsampler" },
           { name: "down_block_2 (CrossAttnDownBlock2D)", shape: "[B,1280,32,32]", sub: "含 cross-attn · downsampler" },
           { name: "down_block_3 (DownBlock2D)", shape: "[B,1280,16,16]", sub: "无 cross-attn · 无 downsampler" },
         ]
       : [
-          { name: "down_block_0 (DownBlock2D)", shape: "[B,320,128,128]", sub: "无 cross-attn · 无 downsampler" },
+          { name: "down_block_0 (DownBlock2D)", shape: "[B,320,128,128]", sub: "无 cross-attn · downsampler" },
           { name: "down_block_1 (CrossAttnDownBlock2D)", shape: "[B,640,64,64]", sub: "含 cross-attn · downsampler" },
-          { name: "down_block_2 (CrossAttnDownBlock2D)", shape: "[B,1280,32,32]", sub: "含 cross-attn · downsampler" },
+          { name: "down_block_2 (CrossAttnDownBlock2D)", shape: "[B,1280,32,32]", sub: "含 cross-attn · 无 downsampler" },
         ];
     const upRows = (sd15
       ? [
           ["up_block_0 (UpBlock2D)", "[B,1280,16,16]→[B,1280,32,32]"],
-          ["up_block_1 (CrossAttnUpBlock2D)", "[B,1280,32,32]→[B,640,64,64]"],
-          ["up_block_2 (CrossAttnUpBlock2D)", "[B,640,64,64]→[B,320,128,128]"],
-          ["up_block_3 (CrossAttnUpBlock2D)", "[B,320,128,128]"],
+          ["up_block_1 (CrossAttnUpBlock2D)", "[B,1280,32,32]→[B,1280,64,64]"],
+          ["up_block_2 (CrossAttnUpBlock2D)", "[B,1280,64,64]→[B,640,128,128]"],
+          ["up_block_3 (CrossAttnUpBlock2D)", "[B,640,128,128]→[B,320,128,128]"],
         ]
       : [
           ["up_block_0 (CrossAttnUpBlock2D)", "[B,1280,32,32]→[B,1280,64,64]"],
-          ["up_block_1 (CrossAttnUpBlock2D)", "[B,1280,64,64]→[B,640,64,64]"],
-          ["up_block_2 (CrossAttnUpBlock2D)", "[B,640,64,64]→[B,320,128,128]"],
+          ["up_block_1 (CrossAttnUpBlock2D)", "[B,1280,64,64]→[B,640,128,128]"],
+          ["up_block_2 (CrossAttnUpBlock2D)", "[B,640,128,128]→[B,320,128,128]"],
         ]);
     const y0 = 44;
     const dy = 46;
@@ -482,9 +681,9 @@
         },
       ],
       attnNoteLines: [
-        "含 cross-attention：down_block_1、down_block_2、mid_block、up_block_0、up_block_1、up_block_2",
-        "不含 cross-attention：down_block_0（DownBlock2D）",
-        "从 down_block_1 起 feature 进入最低分辨率 32×32 之前的空间尺寸依次为 128→64→32→16（mid），再回到 32→64→128",
+        "含 cross-attention：down_block_1、down_block_2、mid_block、up_block_0、up_block_1",
+        "不含 cross-attention：down_block_0（DownBlock2D）、up_block_2（UpBlock2D）",
+        "SDXL 只有 2 个 downsampler（在 down_block_0 / down_block_1 末尾），所以空间尺寸是 128→64→32（mid 在 32×32 = h/4），再按 32→64→128 回到原尺寸；注意力内部的 BasicTransformerBlock 个数为 2（640 级）与 10（1280 级与 mid）",
       ],
       outLabel: "19 · conv_out（3×3）→ [B, 4, 128, 128]（与 z_t 同形状的 epsilon / v）",
     };
@@ -1065,14 +1264,104 @@
           '<div class="ia-finetune-step"><strong>' +
           esc(s[0]) +
           "</strong><p>" +
-          esc(s[1]) +
+          rich(s[1]) +
           "</p></div>",
       )
       .join("");
+    const guide = spec.finetuneData || {};
+    const rows = (guide.rows || [])
+      .map(
+        (row) =>
+          "<tr><td>" + rich(row[0]) + "</td><td>" + rich(row[1]) + "</td><td>" + rich(row[2]) + "</td></tr>",
+      )
+      .join("");
+    const sample = guide.sample
+      ? '<div class="code-block"><span class="code-label">' +
+        esc(guide.sampleTitle || "JSONL · 最小样本") +
+        "</span><pre><code>" +
+        esc(guide.sample) +
+        "</code></pre></div>"
+      : "";
+    const dataBlock = guide.rows
+      ? '<div class="df-finetune-data"><h3>微调数据要求与示例</h3><p>' +
+        rich(guide.intro || "") +
+        '</p><div class="io-table"><table><tr><th>任务</th><th>最低字段</th><th>验收重点</th></tr>' +
+        rows +
+        "</table></div>" +
+        sample +
+        "</div>"
+      : "";
+    const communityConfig = guide.config || [];
+    const configBlock = communityConfig.length
+      ? '<div class="df-community-config"><h3>社区入门配置示例</h3><p>' +
+        rich(guide.configIntro || "下面的数值来自社区文档，用于先跑通流程；不是 MiniMax 官方推荐值，也不是通用最低门槛。") +
+        '</p><div class="df-config-grid">' +
+        communityConfig
+          .map(
+            (item) =>
+              '<div><strong>' +
+              esc(item[0]) +
+              '</strong><code>' +
+              esc(item[1]) +
+              '</code><small>' +
+              rich(item[2] || "") +
+              '</small></div>',
+          )
+          .join("") +
+        "</div></div>"
+      : "";
+    const cases = spec.finetuneCases || [];
+    const casesBlock = cases.length
+      ? '<div class="df-community-cases"><h3>可核查的社区案例</h3><div class="df-case-grid">' +
+        cases
+          .map(
+            (item) =>
+              '<article class="df-case"><strong>' +
+              esc(item.title) +
+              '</strong><div class="df-case-meta">' +
+              esc(item.meta) +
+              '</div><p>' +
+              rich(item.summary) +
+              '</p><p class="df-case-limit"><b>局限：</b>' +
+              rich(item.limit) +
+              '</p><div class="df-case-link">' +
+              item.link +
+              "</div></article>",
+          )
+          .join("") +
+        "</div></div>"
+      : "";
+    const communityBlock = guide.communityLink
+      ? '<div class="df-community"><h3>社区实践入口</h3><p>' +
+        rich(guide.communityIntro || "官方尚未公开完整 H3 训练配方、官方微调脚本或完整损失函数；以下社区资料提供可运行的 LoRA 路径，阅读时请把实现细节与官方资料分开。") +
+        '</p><p class="df-community-link">' +
+        guide.communityLink +
+        "</p></div>"
+      : "";
+    const nextBlock = guide.nextStep
+      ? '<div class="df-next-step"><b>建议下一步</b><p>' + rich(guide.nextStep) + "</p></div>"
+      : "";
+    const loss = spec.finetuneLoss || {};
+    const lossBlock = loss.formula
+      ? '<div class="df-finetune-loss"><h3>微调损失函数</h3><p>' +
+        rich(loss.summary || "微调沿用基座的训练目标，只改变可训练参数的梯度路径。") +
+        '</p><div class="ia-loss-formula"><strong>微调目标</strong><code>' +
+        rich(loss.formula) +
+        '</code></div><p class="df-loss-note">' +
+        rich(loss.note || "目标量和权重必须与基座 checkpoint 的训练配置一致。") +
+        "</p></div>"
+      : "";
     return (
       '<div class="ia-finetune"><h3>微调执行清单</h3><div class="ia-finetune-grid">' +
       steps +
-      '</div><div class="df-finetune-data"><h3>微调数据要求与示例</h3><p>主体 / 风格数据需要图片、精确 caption、尺寸和 split；局部编辑需要 source、target、mask、instruction；构图控制需要 control 图与对齐的 target。按主体或拍摄批次切分，避免近重复图片同时进入训练和验证。</p><div class="io-table"><table><tr><th>目标</th><th>最低字段</th><th>验收重点</th></tr><tr><td>主体 / 风格</td><td>image、caption、width、height、subject、split</td><td>主体一致性、提示遵循、未见角度</td></tr><tr><td>局部编辑</td><td>source、target、mask、instruction、split</td><td>mask 外保持、边缘融合、编辑成功率</td></tr><tr><td>构图 / 控制</td><td>control image、target、caption、布局标注</td><td>位置、比例、文字与背景稳定性</td></tr></table></div><div class="code-block"><span class="code-label">JSONL · SDXL LoRA 样本</span><pre><code>{"image":"train/subject_001.jpg","caption":"sks person, side profile, studio light","width":1024,"height":1024,"subject":"person_a","split":"train"}</code><br /><code>{"source":"edit/in_004.png","target":"edit/out_004.png","mask":"edit/mask_004.png","instruction":"把杯子改成红色，保留手和桌面","split":"validation"}</code></pre></div></div><div class="df-finetune-loss"><h3>微调损失函数</h3><p>微调只改变可训练参数的增量；前向目标与基座保持一致，LoRA 只接收这次误差的梯度。</p><div class="ia-loss-formula"><strong>LoRA 目标</strong><code>L_lora = E[ w(t) · ‖ f_(W+ΔW_lora)(z_t,t,c) − target_t ‖² ]</code></div><p class="df-loss-note"><code>target_t</code> 由 checkpoint 的 <code>prediction_type</code> 决定（epsilon 或 v）；VAE、文本编码器和未选中的 U-Net 权重默认冻结。</p></div></div>'
+      "</div>" +
+      communityBlock +
+      dataBlock +
+      configBlock +
+      casesBlock +
+      nextBlock +
+      lossBlock +
+      "</div>"
     );
   }
 
@@ -1099,17 +1388,103 @@
     return (
       '<div class="ia-loss-panel"><div class="ia-loss-head"><div><h3>训练目标与损失函数</h3><p>' +
       esc(data.summary) +
-      '</p></div><span>训练：随机时间点预测一次 → 与目标比较 → 反向传播</span></div><div class="ia-loss-flow">' +
+      '</p></div><span>' + esc(data.processLabel || "训练：随机时间点预测一次 → 与目标比较 → 反向传播") + '</span></div><div class="ia-loss-flow">' +
       nodes +
       '</div><div class="ia-loss-formula"><strong>核心公式</strong><code>' +
       esc(data.formula) +
       '</code></div><div class="ia-loss-grid"><div><strong>目标量</strong><p>' +
-      esc(data.target) +
+      rich(data.target) +
       '</p></div><div><strong>参数更新路径</strong><p>' +
-      esc(data.gradient) +
+      rich(data.gradient) +
       '</p></div><div><strong>与推理阶段的区别</strong><p>' +
-      esc(data.inference) +
+      rich(data.inference) +
       "</p></div></div></div>"
+    );
+  }
+
+  function dfNetworkView(spec) {
+    const flow = (spec.networkFlow || [])
+      .map((item, index) => {
+        const moduleId = item.module && spec.modules && spec.modules[item.module]
+          ? item.module
+          : "";
+        const tag = moduleId ? "button" : "div";
+        const attrs = moduleId
+          ? ' type="button" data-df-module="' + esc(moduleId) + '" aria-label="点击查看 ' + esc(item.title) + ' 的张量细节"'
+          : "";
+        return (
+          '<' + tag + attrs + ' class="df-net-node df-net-' +
+          esc(item.tone || "core") +
+          '"><span>' +
+          String(index + 1).padStart(2, "0") +
+          "</span><strong>" +
+          esc(item.title) +
+          "</strong><small>" +
+          rich(item.detail || "") +
+          "</small></" + tag + ">" +
+          (index < (spec.networkFlow || []).length - 1
+            ? '<b class="df-net-arrow" aria-hidden="true">→</b>'
+            : "")
+        );
+      })
+      .join("");
+    const briefs = (spec.sourcesBrief || [])
+      .map(
+        (item) =>
+          '<div class="df-net-brief"><strong>' +
+          esc(item[0]) +
+          "</strong><p>" +
+          item[1] +
+          "</p></div>",
+      )
+      .join("");
+    const h3Map = spec.h3Network ? h3NetworkMap() : "";
+    return (
+      h3Map +
+      '<div class="df-network-overview"><div class="df-network-label">主干总览</div><div class="df-network-flow">' +
+      flow +
+      '</div><p class="df-network-note">网络模块只在这里列出；带“展开内部结构”的节点可点击查看完整层级、张量和重复位置。Tokenizer、文本编码器和 VAE 属于推断接口，详见第 2 章。</p>' +
+      (briefs ? '<div class="df-network-briefs">' + briefs + "</div>" : "") +
+      "</div>"
+    );
+  }
+
+  function h3NetworkMap() {
+    const escSvg = (value) => esc(value).replace(/"/g, "&quot;");
+    const box = (x, y, w, h, tone, title, lines, moduleId) =>
+      '<g class="h3-svg-box h3-svg-' + tone + (moduleId ? ' h3-svg-clickable' : '') + '"' + (moduleId ? ' role="button" tabindex="0" data-df-module="' + escSvg(moduleId) + '" aria-label="点击查看 ' + escSvg(title) + ' 的张量细节"' : '') + '><rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="7" />' +
+      '<text x="' + (x + 12) + '" y="' + (y + 22) + '" class="h3-svg-title">' + escSvg(title) + '</text>' +
+      lines.map((line, i) => '<text x="' + (x + 12) + '" y="' + (y + 42 + i * 15) + '" class="h3-svg-line">' + escSvg(line) + '</text>').join("") +
+      '</g>';
+    const arrow = (x1, y1, x2, y2, dashed) =>
+      '<path class="h3-svg-arrow' + (dashed ? ' h3-svg-dashed' : '') + '" d="M ' + x1 + ' ' + y1 + ' L ' + x2 + ' ' + y2 + '" marker-end="url(#h3-arrow)" />';
+    return (
+      '<div class="h3-network-map"><div class="h3-network-map-head"><div><strong>MiniMax H3 · 模块连接图</strong><p>先看三类输入如何汇入 packed 多模态序列，再看单一 H3-Omni 主干如何拆出视频与音频输出。标注的数字里，绿色来自官方公开资料与 checkpoint 核验，未公开项仍写成未知。</p></div><span>官方公开 + checkpoint 核验</span></div>' +
+      '<div class="h3-map-scroll"><svg class="h3-network-svg" viewBox="0 0 1040 500" role="img" aria-label="MiniMax H3 多模态网络结构图" preserveAspectRatio="xMinYMin meet"><defs><marker id="h3-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" /></marker></defs>' +
+      '<text x="20" y="20" class="h3-svg-label">输入与条件编码</text>' +
+      box(20, 38, 205, 76, "condition", "文本 prompt", ["Tokenizer → H3-Encoder", "Qwen3-VL-32B · 50 层 / 5120"], "h3enc") +
+      box(20, 140, 205, 76, "condition", "参考图 / 视频", ["H3-Encoder + VisualVAE", "视觉塔 27 层 / 宽 1152"], "vvae") +
+      box(20, 242, 205, 76, "condition", "参考音频", ["H3-AudioVAE", "32 kHz → 40 Hz / 声道 · 32ch"], "avae") +
+      box(275, 38, 220, 76, "latent", "文本 / 参考条件 token", ["来源：H3-Encoder 第 50 层", "condition_proj 5120→5376"], "h3enc") +
+      box(275, 140, 220, 76, "latent", "视频 latent token", ["VisualVAE f16t4d24", "24 通道 → patch 96 维"], "vvae") +
+      box(275, 242, 220, 76, "latent", "音频 latent token", ["AudioVAE latent 32 通道", "audio_patch_proj 32→5376"], "avae") +
+      arrow(225, 76, 275, 76) + arrow(225, 178, 275, 178) + arrow(225, 280, 275, 280) +
+      '<path class="h3-svg-converge" d="M 495 76 L 545 76 L 545 178 M 495 178 L 545 178 M 495 280 L 545 280 L 545 178" />' +
+      box(565, 130, 215, 96, "packed", "packed 多模态序列", ["text + video(96) + audio(32) tokens", "MM-RoPE (t, h, w)", "拼接顺序未公开"], "omni") +
+      arrow(545, 178, 565, 178) +
+      '<text x="805" y="20" class="h3-svg-label">统一主干与双路输出</text>' +
+      box(805, 68, 215, 112, "core", "H3-Omni-Transformer", ["50 层 dense single-stream", "hidden 5376 · 56 head × 128", "SwiGLU 14336 · AdaLN（可缓存）"], "omni") +
+      arrow(780, 178, 805, 124) +
+      box(805, 218, 100, 72, "output", "视频输出头", ["video update"], "vvae") +
+      box(920, 218, 100, 72, "output", "音频输出头", ["audio update"], "avae") +
+      arrow(870, 180, 855, 218) + arrow(950, 180, 970, 218) +
+      box(805, 332, 100, 72, "decode", "VisualVAE", ["decode → frames"], "vvae") +
+      box(920, 332, 100, 72, "decode", "AudioVAE", ["decode → stereo"], "avae") +
+      arrow(855, 290, 855, 332) + arrow(970, 290, 970, 332) +
+      box(805, 430, 100, 48, "result", "视频", ["24 FPS"]) +
+      box(920, 430, 100, 48, "result", "音频", ["32 kHz stereo"]) +
+      arrow(855, 404, 855, 430) + arrow(970, 404, 970, 430) +
+      '</svg></div><p class="h3-network-map-note"><b>读图边界：</b>官方明确三路条件、VisualVAE / AudioVAE 压缩数字、33B single-stream 与双路输出；本次又从 ComfyUI 侧 checkpoint 核验出主干 <b>50 层 / hidden 5376 / 56 head × 128 / SwiGLU 14336</b>、视频 token <b>96</b> 维、音频 token <b>32</b> 维、条件投影 <b>5120 → 5376</b>，以及两个 VAE 与 latent upscaler 的逐层结构（详见各模块弹窗与「论文与 checkpoint 对照」表）。仍然只能靠推理代码确认的是：packed token 的精确拼接顺序、<code>token_refiner</code> 的作用位置、训练目标与 solver。</p></div>'
     );
   }
 
@@ -1138,30 +1513,42 @@
 
   function renderDataflow(host, spec) {
     host.classList.add("interactive-architecture", "dataflow-architecture");
+    const networkSection = host.closest('.page-network');
     if (spec.network) {
       // 完整网络结构图放在最前面：先看清网络长什么样，再按顺序读数据流。
       host.insertAdjacentHTML("beforebegin", '<div class="ns-host">' + nsNetwork(spec) + "</div>");
       const nsHost = host.previousElementSibling;
       if (nsHost) nsMount(nsHost, host);
+    } else if (networkSection) {
+      // Transformer 类模型使用同一版式，但网络图由各自的 catalog 提供。
+      host.insertAdjacentHTML("beforebegin", dfNetworkView(spec));
     }
     const stages = spec.stages.map((s, i) => dfStage(s, i)).join("");
     host.innerHTML =
       '<section class="generated-section generated-inference"><h2>2. 推断流程</h2>' +
-      '<p class="generated-intro">Tokenizer、文本编码器、VAE 和 scheduler 只在这里作为完整推断链路中的步骤出现；它们不是 U-Net 的内部模块。</p>' +
+      '<p class="generated-intro">' + rich(spec.inferenceIntro || "Tokenizer、条件编码器、latent 编解码器和 scheduler 作为完整推断链路中的步骤出现；它们不是主干 block 的内部层。") + "</p>" +
       dfHeader(spec) +
       '<div class="df-flow">' + stages + "</div>" +
       dfLoop(spec.loop) +
-      '<div class="ia-loop-note"><strong>循环闭合：</strong>文本条件在循环外编码一次；每一轮 U-Net 都重新读取 <code>c_text</code>，但只有 <code>z_t</code> 与 <code>t</code> 随 scheduler 更新。<code>t = 0</code> 后才进入 VAE Decode。</div></section>' +
+      '<div class="ia-loop-note"><strong>循环闭合：</strong>条件编码通常在循环外完成；每轮主干重新读取固定条件，只有状态与时间步由 solver 更新。具体回路以图中闭合点为准。</div>' +
+      dfCondTable(spec) +
+      dfCost(spec) +
+      '</section>' +
       '<section class="generated-section generated-training"><h2>3. 训练流程与损失函数</h2>' +
-      '<p class="generated-intro">训练不跑完整采样循环，而是在随机时间点构造一个带噪 latent，只监督 U-Net 对该时间点目标的预测。</p>' +
+      '<p class="generated-intro">' +
+      rich(spec.trainingIntro || "训练通常在随机时间点构造状态，只监督主干对该时间点目标的预测；不把完整采样循环放进训练。") +
+      "</p>" +
       dfLoss(spec) +
       '</section>' +
       '<section class="generated-section generated-finetune" id="finetune"><h2>4. 微调方式</h2>' +
-      '<p class="generated-intro">优先从 U-Net attention 的 <code>to_q</code>、<code>to_k</code>、<code>to_v</code>、<code>to_out.0</code> 开始挂 LoRA，再按容量需求加入 feed-forward；VAE 和文本编码器默认冻结。</p>' +
+      '<p class="generated-intro">' +
+      rich(spec.finetuneIntro || "先按第 1 章的模块目录确认 target_modules，再决定 LoRA、部分解冻或全量训练；VAE 与条件编码器默认冻结。") +
+      "</p>" +
       dfFinetune(spec) +
+      dfUnknown(spec) +
+      dfSources(spec) +
       '</section>';
     // 网络结构是独立的第 1 章；把自动生成的第 2～4 章移到它后面，避免章节语义嵌套。
-    const networkSection = host.closest('.page-network');
     if (networkSection) {
       const anchor = networkSection.nextSibling;
       Array.from(host.children).forEach(function (section) {
@@ -1357,7 +1744,7 @@
             op(
               "read",
               "attention read(K,V) × 多次",
-              "每个 cross-attention block 独立计算一次 softmax(QKᵀ/√d)V",
+              "每个 cross-attention block 独立计算一次 $\\mathrm{softmax}(QK^\\top/\\sqrt{d})\\,V$",
             ),
             {
               kind: "output",
@@ -1386,7 +1773,7 @@
             },
             op(
               "add",
-              "加权残差：eps = eps_u + s·(eps_c − eps_u)",
+              "加权残差：$\\epsilon = \\epsilon_u + s\\,(\\epsilon_c - \\epsilon_u)$",
               "注意这里是“有条件减无条件再放大”的代数式，不是把两个 latent 相加",
             ),
             {
@@ -1519,12 +1906,12 @@
           "训练不跑完整采样循环：随机取一个 t，把 clean latent 加噪成 z_t，让 U-Net 预测该时间点的噪声（epsilon）或速度（v），再与真实目标做回归。",
         flow: [
           ["真实图片", "x → VAE → z₀", "训练样本的 clean latent", "data"],
-          ["随机扰动", "ε ~ N(0,I)、采样 t", "z_t = α_t z₀ + σ_t ε", "noise"],
+          ["随机扰动", "$\\epsilon \\sim \\mathcal{N}(0,I)$、采样 $t$", "$z_t = \\alpha_t z_0 + \\sigma_t \\epsilon$", "noise"],
           ["U-Net 预测", "eps_theta(z_t,t,c_text,pooled)", "c_text 走 cross-attn，pooled 走 ADM", "model"],
           ["对齐目标", "target = ε 或 v", "必须与该 checkpoint 的 prediction_type 一致", "target"],
           ["反向传播", "MSE / Huber → ∇θL", "更新 LoRA 的 A/B，或解冻的 U-Net 参数", "loss"],
         ],
-        formula: "L = E[ w(t) · ‖ eps_theta(z_t, t, c_text, c_pooled) − ε ‖² ]　（v-prediction 时把 ε 换成 v）",
+        formula: "$L = \\mathbb{E}\\left[\\, w(t)\\,\\| \\epsilon_\\theta(z_t, t, c_{\\text{text}}, c_{\\text{pooled}}) - \\epsilon \\|^2 \\right]$　（v-prediction 时把 ε 换成 v）",
         target:
           "目标量是当前 t 下的噪声或速度，不是最终图片。prediction_type 与 weighting 都要从 scheduler config 读取。",
         gradient:
@@ -1558,6 +1945,21 @@
           "固定 seed、步数、scheduler 与提示词，对比基座的主体一致性、提示遵循、文字渲染、负面场景，以及未见分辨率和旧能力保持。",
         ],
       ],
+      finetuneData: {
+        intro: "主体 / 风格训练用配图与精确 caption；局部编辑必须保留 source、target、mask、instruction 的配对关系。按主体或拍摄批次切分，避免近重复图片跨越训练集和验证集。",
+        rows: [
+          ["主体 / 风格", "image、caption、width、height、subject、split", "主体一致性、提示遵循、未见角度"],
+          ["局部编辑", "source、target、mask、instruction、split", "mask 外保持、边缘融合、编辑成功率"],
+          ["构图 / 控制", "control image、target、caption、布局标注", "位置、比例、文字与背景稳定性"],
+        ],
+        sampleTitle: "JSONL · SDXL LoRA 最小样本",
+        sample: '{"image":"train/subject_001.jpg","caption":"sks person, side profile, studio light","width":1024,"height":1024,"subject":"person_a","split":"train"}',
+      },
+      finetuneLoss: {
+        summary: "微调沿用基座在随机 t 上的 epsilon / v 回归，只让 LoRA 增量参数接收这次误差的梯度。",
+        formula: "$L_{\\text{lora}} = \\mathbb{E}\\left[\\, w(t)\\,\\| f_{W+\\Delta W_{\\text{lora}}}(z_t,t,c) - \\text{target}_t \\|^2 \\right]$",
+        note: "target_t 由 checkpoint 的 prediction_type 决定；VAE、文本编码器和未选中的 U-Net 权重默认冻结。",
+      },
       sources: [
         {
           item: "Latent Diffusion 的 VAE + U-Net + cross-attention 设计",
@@ -1635,6 +2037,12 @@
         "文本流和图像流各自独立投影与归一化，只在每个 block 的 attention 内部沿 token 序列维拼接 Q/K/V；拼接后立刻按 token 数拆回两条流继续残差路径。",
       kind: "SD3.5-large 的公开 config 与 Diffusers SD3Transformer2DModel 实现",
       modalKicker: "SD3 / MMDiT 模块",
+      networkFlow: [
+        { title: "VAE latent", detail: "[B,16,H′,W′]；从像素压缩而来", tone: "latent" },
+        { title: "Patchify + position", detail: "2×2 patch → image tokens [B,Nimg,D]", tone: "condition" },
+        { title: "联合 Transformer", detail: "文本流与图像流在 attention 内沿序列维交互", tone: "core", module: "mmdit" },
+        { title: "Unpatchify + output", detail: "只取图像 token → velocity → solver → VAE decode", tone: "output" },
+      ],
       sourcesBrief: [
         [
           "双流联合注意力的确切位置",
@@ -1877,12 +2285,12 @@
           "SD3 使用 rectified flow / flow matching：在 clean latent 与噪声之间取直线路径上的一个点，让 Transformer 回归该点的速度。",
         flow: [
           ["真实 latent", "x → VAE → z₀", "16 通道 clean latent", "data"],
-          ["路径采样", "ε ~ N(0,I)、t∈[0,1]", "z_t = (1−t)·z₀ + t·ε", "noise"],
+          ["路径采样", "$\\epsilon \\sim \\mathcal{N}(0,I)$、$t \\in [0,1]$", "$z_t = (1-t)\\,z_0 + t\\,\\epsilon$", "noise"],
           ["MMDiT 预测", "vθ(z_t, t, c_text, pooled)", "两个条件入口各司其职", "model"],
-          ["真实速度", "u_t = ε − z₀", "直线路径方向", "target"],
+          ["真实速度", "$u_t = \\epsilon - z_0$", "直线路径方向", "target"],
           ["反向传播", "MSE / Huber → ∇θL", "更新 Transformer 或其 LoRA", "loss"],
         ],
-        formula: "L = E[ ‖ vθ(z_t, t, c_text, c_pooled) − (ε − z₀) ‖² ]",
+        formula: "$L = \\mathbb{E}\\left[\\, \\| v_\\theta(z_t, t, c_{\\text{text}}, c_{\\text{pooled}}) - (\\epsilon - z_0) \\|^2 \\right]$",
         target:
           "目标是 velocity。若某个 checkpoint 配置成 epsilon 或 v prediction，公式必须按它的 scheduler config 改写。",
         gradient:
@@ -1912,6 +2320,21 @@
           "同时测提示遵循、长文本与字符准确率、未见分辨率、以及 joint attention 是否在拼接长度变化时保持稳定。",
         ],
       ],
+      finetuneData: {
+        intro: "DiT / MMDiT 微调需要与基座相同的 VAE、patch size、文本字段和分辨率分布。文字渲染样本额外保存精确转写、语言与文字区域。",
+        rows: [
+          ["文生图 / 风格", "image、caption、width、height、split", "提示遵循、风格一致性、未见宽高比"],
+          ["文字渲染", "image、caption、transcription、language、text boxes", "字符准确率、位置、字体与背景稳定性"],
+          ["编辑 / 控制", "source、target、instruction、mask 或 control", "编辑区域成功率、非编辑区保持"],
+        ],
+        sampleTitle: "JSONL · MMDiT 最小样本",
+        sample: '{"image":"train/poster_001.png","caption":"一张黑底白字的电影海报","transcription":"电影海报","language":"zh","split":"train"}',
+      },
+      finetuneLoss: {
+        summary: "MMDiT 微调沿用 flow matching 的速度回归；LoRA 只改变双流投影、联合 attention 或 MLP 的参数增量。",
+        formula: "$L_{\\text{lora}} = \\mathbb{E}\\left[\\, \\| v_{W+\\Delta W_{\\text{lora}}}(z_t,t,c) - (\\epsilon - z_0) \\|^2 \\right]$",
+        note: "时间采样、weighting 和 prediction_type 以具体 checkpoint 的训练配置为准；VAE 与文本编码器通常冻结。",
+      },
       sources: [
         {
           item: "DiT：latent patch 化 + Transformer 预测",
@@ -1960,7 +2383,7 @@
             '<div class="md-pill md-pill-purple">图像：to_q/to_k/to_v → Q_i,K_i,V_i [B,heads,4096,64]<br>文本：add_q_proj/add_k_proj/add_v_proj → Q_t,K_t,V_t [B,heads,N_txt,64]</div>' +
             '<span>↓ RMSNorm 作用于 Q/K（qk_norm）</span>' +
             '<div class="md-pill md-pill-amber">concat(dim=2, 序列维)：Q=[Q_i‖Q_t]、K=[K_i‖K_t]、V=[V_i‖V_t]<br>形状 [B,heads,4096+N_txt,64]</div>' +
-            '<span>↓ softmax(QKᵀ/√64)·V（一次联合 attention）</span>' +
+            '<span>↓ $\\mathrm{softmax}\\!\\left(\\dfrac{QK^\\top}{\\sqrt{64}}\\right)V$（一次联合 attention）</span>' +
             '<div class="md-pill md-pill-blue">联合输出 [B,heads,4096+N_txt,64] → flatten → [B,4096+N_txt,2432]</div>' +
             '<span>↓ split(seq)：image = [:, :4096]，text = [:, 4096:]</span>' +
             '<div class="md-pill">图像：to_out[0] → residual add；文本：to_add_out → residual add</div>' +
@@ -1999,6 +2422,23 @@
             '<div class="md-pill md-pill-output">序列 [B,77,2048] → 与 T5 条件拼接；pooled [B,2048] → 进 time_text_embed</div>' +
             "</div>" +
             '<div class="md-caption">序列条件最终被 context_embedder 投影到 2432；pooled 不需要投影到模型宽度，它只参与 AdaLN 的调制生成。</div>',
+          generic: {
+            title: "CLIP 文本编码器的完整 block",
+            note:
+              "CLIP 的结构完全公开，但详情页通常只写“CLIP-L / CLIP-G”。框内是一个完整 CLIP text transformer：两个输出入口（序列条件与 pooled 条件）都在图里。",
+            mermaid: [
+              "flowchart TD",
+              '  c0["prompt → CLIP tokenizer<br/>input_ids [B,77]"]:::in --> c1["token embedding + 位置 embedding<br/>[B,77,D]（D=768 或 1280）"]:::core',
+              '  c1 --> c2["CLIP encoder block ×L（CLIP-L 12 层 / CLIP-G 32 层）<br/>LayerNorm → 因果 self-attention（heads×d_head）→ residual<br/>LayerNorm → MLP（4D→4D, GELU）→ residual<br/>[B,77,D]"]:::attn',
+              '  c2 --> c3["final LayerNorm<br/>last_hidden_state [B,77,D]"]:::out',
+              '  c3 --> c4["序列条件：hidden_states[-2] / last_hidden_state<br/>→ context_embedder → 进联合 attention 的 K/V"]:::latent',
+              '  c3 --> c5["pooled 条件：EOS 位置 → text_projection<br/>[B,projection_dim] → 进时间 / AdaLN 调制"]:::latent',
+            ].join("\n"),
+            facts:
+              "<b>两个出口不能混：</b>序列条件 <code>[B,77,768]</code> 与 <code>[B,77,1280]</code> 沿通道维拼成 <code>[B,77,2048]</code> 后进 attention 的 K/V；pooled 向量 <code>[B,1280]</code> 只参与时间/AdaLN 调制，不进 K/V。注意力是<b>因果 mask</b>（文本是序列建模），与图像侧的全局注意力不同。",
+            linkHref: "index.html#atlas-text-encoder",
+            linkText: "通用模块图鉴 17：CLIP / T5 文本编码器的完整张量级结构 →",
+          },
           input: ["prompt 经过两套 CLIP tokenizer 得到的 input_ids [B,77]。"],
           output: [
             "序列条件 [B,77,2048] 与 pooled 条件 [B,2048]；两者进入主干的位置完全不同。",
@@ -2016,6 +2456,12 @@
         "两条条件路径分开：T5 序列 hidden 进文本流；CLIP pooled 与 guidance 进调制向量。single-stream 把文本 token 与图像 token 沿 token 序列维拼接为一个序列。",
       kind: "FLUX.1 的 FluxTransformer2DModel 实现与 checkpoint config（dev/schnell 差异单列）",
       modalKicker: "FLUX 模块",
+      networkFlow: [
+        { title: "Pack latent", detail: "VAE latent 2×2 打包 → image tokens", tone: "latent" },
+        { title: "Double-stream ×19", detail: "图像 / 文本保留各自参数，同时做联合 attention", tone: "core", module: "double" },
+        { title: "Single-stream ×38", detail: "concat(seq) 后共用 attention + MLP", tone: "core", module: "single" },
+        { title: "Split + unpack", detail: "保留 image token → velocity → flow solver", tone: "output" },
+      ],
       sourcesBrief: [
         [
           "single-stream 的拼接维度",
@@ -2271,12 +2717,12 @@
           "FLUX 用 rectified flow 训练：Transformer 回归从噪声到数据直线路径上的速度；sampling 才是多步 ODE 积分。",
         flow: [
           ["真实 latent", "x → VAE → z₀ → pack", "packed image token", "data"],
-          ["插值状态", "ε ~ N(0,I)、t∈[0,1]", "z_t = (1−t)·z₀ + t·ε", "noise"],
+          ["插值状态", "$\\epsilon \\sim \\mathcal{N}(0,I)$、$t \\in [0,1]$", "$z_t = (1-t)\\,z_0 + t\\,\\epsilon$", "noise"],
           ["Transformer", "vθ(z_t, t, c_txt, pooled, guidance)", "double → single，最后只取图像 token", "model"],
-          ["速度目标", "u_t = ε − z₀", "路径在该点的真实方向", "target"],
+          ["速度目标", "$u_t = \\epsilon - z_0$", "路径在该点的真实方向", "target"],
           ["反向传播", "MSE → ∇θL", "更新 image 侧或 joint LoRA", "loss"],
         ],
-        formula: "L = E[ ‖ vθ(z_t, t, c_txt, c_pooled) − (ε − z₀) ‖² ]",
+        formula: "$L = \\mathbb{E}\\left[\\, \\| v_\\theta(z_t, t, c_{\\text{txt}}, c_{\\text{pooled}}) - (\\epsilon - z_0) \\|^2 \\right]$",
         target:
           "target 是 flow 速度，不是 VAE 像素重建误差；noise 路径、logit-normal 时间采样等细节以官方 flux 仓库训练脚本为准。",
         gradient:
@@ -2306,6 +2752,21 @@
           "固定 solver、步数、guidance、分辨率与 seed；比较结构、风格、文字、长 prompt、未见宽高比和旧能力保持。",
         ],
       ],
+      finetuneData: {
+        intro: "FLUX 的训练样本必须同时适配 CLIP pooled 条件与 T5 序列条件；编辑样本的字段随 Fill、Kontext、Redux 等 checkpoint 变化，先按 pipeline 签名确认。",
+        rows: [
+          ["文生图 / 风格", "image、caption、width、height、split", "结构、风格、长 prompt、未见宽高比"],
+          ["文字渲染", "image、caption、transcription、language、text boxes", "字符准确率、布局、背景稳定性"],
+          ["图像编辑", "source、target、instruction，mask 按 checkpoint 决定", "编辑成功率、非编辑区保持、边缘融合"],
+        ],
+        sampleTitle: "JSONL · FLUX 最小样本",
+        sample: '{"image":"train/sign_001.png","caption":"A red street sign reading OPEN","transcription":"OPEN","language":"en","split":"train"}',
+      },
+      finetuneLoss: {
+        summary: "FLUX LoRA 沿用 rectified flow 的速度回归，训练时只更新选中的 double / single stream 增量参数。",
+        formula: "$L_{\\text{lora}} = \\mathbb{E}\\left[\\, \\| v_{W+\\Delta W_{\\text{lora}}}(z_t,t,c_{\\text{txt}},c_{\\text{pooled}}) - (\\epsilon - z_0) \\|^2 \\right]$",
+        note: "packed latent、时间采样和 weighting 必须与基座一致；VAE、CLIP、T5 默认冻结。",
+      },
       sources: [
         {
           item: "FLUX.1 的 double/single stream 与 flow matching 训练",
@@ -2353,7 +2814,7 @@
             '<div class="md-pill md-pill-purple">图像：to_q/to_k/to_v → Q_i,K_i,V_i [B,24,4096,128]；文本：add_q_proj/add_k_proj/add_v_proj → Q_t,K_t,V_t [B,24,N_t5,128]</div>' +
             '<span>↓ RMSNorm 应用于 Q/K；RoPE 按 (0,h,w) 与文本坐标施加</span>' +
             '<div class="md-pill md-pill-amber">concat(dim=1, 序列维)：Q=[Q_t‖Q_i]、K=[K_t‖K_i]、V=[V_t‖V_i] → [B,24,N_t5+4096,128]</div>' +
-            '<span>↓ softmax(QKᵀ/√128)·V</span>' +
+            '<span>↓ $\\mathrm{softmax}\\!\\left(\\dfrac{QK^\\top}{\\sqrt{128}}\\right)V$</span>' +
             '<div class="md-pill md-pill-blue">joint 输出 [B,N_t5+4096,3072] → split(seq)：text = [:, :N_t5]，image = [:, N_t5:]</div>' +
             '<span>↓ 各自 out projection → residual add（逐元素）</span>' +
             '<div class="md-pill">image：ff.net（GELU 门控 MLP）→ residual add；text：ff_context → residual add</div>' +
@@ -2413,6 +2874,23 @@
             '<div class="md-pill md-pill-output">文本 token [B,N_t5,3072] 进入主干</div>' +
             "</div>" +
             '<div class="md-caption">T5 使用 encoder-only 部分；padding 位置会被 mask 或按 pipeline 处理，具体策略按实现核对。</div>',
+          generic: {
+            title: "T5 encoder 的完整 block",
+            note:
+              "T5 的结构完全公开，但详情页通常只写“joint_attention_dim=4096”。框内是一个完整 T5 encoder：从 token embedding 到 txt_in 投影。",
+            mermaid: [
+              "flowchart TD",
+              '  t0["prompt → T5 tokenizer（spiece）<br/>input_ids [B,N_t5]（≤512）"]:::in --> t1["token embedding + 相对位置 bias<br/>[B,N_t5,4096]"]:::core',
+              '  t1 --> t2["T5 encoder block ×24<br/>RMSNorm → self-attention（64 heads × d_head 64，无因果 mask）→ residual<br/>RMSNorm → FFN（4096→10240→4096）→ residual<br/>[B,N_t5,4096]"]:::attn',
+              '  t2 --> t3["final RMSNorm<br/>last_hidden_state [B,N_t5,4096]"]:::out',
+              '  t3 --> t4["txt_in（Linear 4096→D_model）<br/>[B,N_t5,D_model]"]:::latent',
+              '  t4 --> t5["作为文本 token 进 double-stream 与 single-stream<br/>每步被主干重新读取"]:::out',
+            ].join("\n"),
+            facts:
+              "<b>和 CLIP 的三处差别：</b>① 归一化用 RMSNorm 而不是 LayerNorm；② 位置信息来自<b>相对位置 bias</b>，不是可学习的位置 embedding；③ encoder-only、无因果 mask，且不提供 pooled 向量，所以文本条件只有“序列”这一个入口。padding 位置如何 mask 要按 pipeline 的 <code>encode_prompt</code> 核对。",
+            linkHref: "index.html#atlas-text-encoder",
+            linkText: "通用模块图鉴 17：CLIP / T5 文本编码器的完整张量级结构 →",
+          },
           input: ["prompt 经 T5 tokenizer 得到的 input_ids。"],
           output: ["序列 hidden [B,N_t5,4096]，投影后为 [B,N_t5,3072]。"],
           role: ["提供长文本与复杂语义的序列条件，是文字渲染与长 prompt 能力的主要来源。"],
@@ -2428,6 +2906,12 @@
         "Qwen-Image 不是 SD3 或 FLUX 的复制品：文本编码器是 Qwen2.5-VL，图像 latent 为 16 通道并打包成 64 维 patch token，Edit 路径把同一张源图分别送入 Qwen2.5-VL 与 VAE。",
       kind: "Qwen-Image / Qwen-Image-Edit-2509 的公开 config 与 Diffusers QwenImageTransformer2DModel 实现",
       modalKicker: "Qwen-Image 模块",
+      networkFlow: [
+        { title: "VAE latent", detail: "16 通道 latent；2×2 邻域打包为 64 维 patch token", tone: "latent" },
+        { title: "Qwen2.5-VL 条件", detail: "文本与 Edit 参考图形成多模态序列", tone: "condition", module: "vl" },
+        { title: "MMDiT ×60", detail: "24 heads × 128；joint attention + MLP", tone: "core", module: "trf" },
+        { title: "Output + decode", detail: "64 维 patch velocity → unpack → VAE decode", tone: "output" },
+      ],
       sourcesBrief: [
         [
           "Edit 的双重编码",
@@ -2677,10 +3161,10 @@
           ["目标图像", "x → VAE → z₀（16 通道）", "T2I 或 Edit 的 target latent", "data"],
           ["构造状态", "ε、t（Edit 另有源图条件）", "按 flow 路径得到 z_t", "noise"],
           ["Qwen Transformer", "vθ(z_t, t, c_text, c_ref)", "联合 attention 读取文本与参考", "model"],
-          ["速度目标", "u_t = ε − z₀（按报告定义）", "以该 checkpoint 的 scheduler/训练脚本为准", "target"],
+          ["速度目标", "$u_t = \\epsilon - z_0$（按报告定义）", "以该 checkpoint 的 scheduler/训练脚本为准", "target"],
           ["反向传播", "MSE → ∇θL", "主干或 LoRA；另有 I2I 重建项", "loss"],
         ],
-        formula: "L = E[ ‖ vθ(z_t, t, c_text, c_ref) − u_t ‖² ]（+ I2I reconstruction 项，权重未公开）",
+        formula: "$L = \\mathbb{E}\\left[\\, \\| v_\\theta(z_t, t, c_{\\text{text}}, c_{\\text{ref}}) - u_t \\|^2 \\right]$（+ I2I reconstruction 项，权重未公开）",
         target:
           "target 是 velocity；报告未完整公开时间采样分布、loss 权重与全部训练细节，这部分标注为未核实。",
         gradient:
@@ -2710,6 +3194,21 @@
           "分别测试中文/英文长文本渲染、字符准确率、编辑区域成功率、非编辑区保持，以及未见宽高比。",
         ],
       ],
+      finetuneData: {
+        intro: "Qwen-Image 的 T2I 样本要覆盖中文 / 英文文本和画面文字；Edit 样本要严格配对 source、target、instruction，mask 只在所选 pipeline 明确支持时使用。",
+        rows: [
+          ["文生图", "image、caption、transcription、language、width、height", "中文 / 英文长文本、字符准确率、未见宽高比"],
+          ["图像编辑", "source、target、instruction、mask（可选）、split", "编辑区域成功率、非编辑区保持"],
+          ["参考图条件", "reference image、caption / instruction、target、split", "身份与构图一致性、条件组合稳定性"],
+        ],
+        sampleTitle: "JSONL · Qwen-Image Edit 最小样本",
+        sample: '{"source":"edit/in_004.png","target":"edit/out_004.png","instruction":"把杯子改成红色，保留手和桌面","split":"train"}',
+      },
+      finetuneLoss: {
+        summary: "Qwen-Image 微调沿用 flow velocity 回归；Edit 的重建项与权重是否启用由具体 pipeline 和训练代码决定。",
+        formula: "$L_{\\text{lora}} = \\mathbb{E}\\left[\\, \\| v_{W+\\Delta W_{\\text{lora}}}(z_t,t,c_{\\text{text}},c_{\\text{ref}}) - u_t \\|^2 \\right] + \\lambda_{\\text{rec}}\\,L_{\\text{reconstruction}}$",
+        note: "报告未完整公开时间采样和重建项权重；latent 归一化、16 通道与 2×2 打包必须保持基座一致。",
+      },
       sources: [
         {
           item: "模型规模、双重编码与多任务训练",
@@ -2759,7 +3258,29 @@
             '<span>↓ txt_norm → txt_in（Linear 3584→3072）</span>' +
             '<div class="md-pill md-pill-output">文本条件 [B,N_txt,3072] 与图像 token 一起进联合 attention</div>' +
             "</div>" +
-            '<div class="md-caption">这里用的是一个因果语言模型骨干作为条件编码器，因此“文本条件”本身就是多模态序列；它与 CLIP/T5 的结构、层数、输出维度都不同。</div>',
+            '<div class="md-caption">这里用的是一个因果语言模型骨干作为条件编码器，因此“文本条件”本身就是多模态序列；它与 CLIP/T5 的结构、层数、输出维度都不同。完整通用结构（视觉塔 + merger + LLM 堆叠）见下方虚线框。</div>',
+          generic: {
+            title: "多模态条件编码器（ViT + merger + Qwen2.5-VL 解码器堆叠）",
+            note:
+              "条件编码器只用它的隐藏层，不训练生成头；框内是这类“视觉塔 + 投影器 + decoder-only LLM”的完整通用结构，Edit 时源图走的就是视觉这一路。",
+            mermaid: [
+              "flowchart TD",
+              '  t0["prompt（中文 / 长文本 / 排版描述）<br/>input_ids [B,N_txt]"]:::in --> te["token embedding<br/>[B,N_txt,3584]"]:::core',
+              '  i0["Edit 参考图<br/>[B,3,H,W]"]:::in --> pe["ViT PatchEmbed（14×14）+ 位置编码<br/>[B,N_img,D_vit]"]:::core',
+              '  pe --> vit["ViT blocks：窗口注意力与全局注意力交替<br/>[B,N_img,D_vit]"]:::attn',
+              '  vit --> mer["Merger：2×2 token 合并 + MLP<br/>[B,N_img/4,3584]"]:::cond',
+              '  te --> seq["concat(seq)：文本 embedding 与视觉 token<br/>[B,N_txt+N_img/4,3584]"]:::latent',
+              "  mer --> seq",
+              '  seq --> llm["Qwen2.5-VL 解码器堆叠 ×L<br/>RMSNorm + GQA attention(RoPE) + SwiGLU<br/>[B,N,3584]"]:::attn',
+              '  llm --> tap["取指定层 hidden states<br/>[B,N,3584]"]:::out',
+              '  tap --> proj["txt_norm → txt_in（Linear 3584→3072）<br/>[B,N,3072]"]:::out',
+              '  proj --> packed["与图像 token 一起进联合 attention<br/>每步被主干重新读取"]:::latent',
+            ].join("\n"),
+            facts:
+              "<b>和 CLIP/T5 的差别：</b>它本身是 decoder-only 大模型，因此“文本条件”其实是<b>多模态序列</b>，能同时承载文字语义与参考图语义；取哪一层、是否再经过 <code>txt_norm</code> 必须以该 checkpoint 的 pipeline 代码为准。Edit 的另一路（VAE 重建路径）不在这个模块里，两条路径的 latent 由 I2I 重建任务对齐。",
+            linkHref: "index.html#atlas-mm-encoder",
+            linkText: "通用模块图鉴 18：多模态条件编码器的完整张量级结构 →",
+          },
           input: [
             "prompt 的 input_ids；Edit 任务时还会把源图 patch 一并送入同一编码器。",
           ],
@@ -2815,18 +3336,33 @@
     h3: {
       title: "MiniMax H3 · 官方公开资料可确证的统一音视频数据流",
       subtitle:
-        "本图只画官方公告与模型卡明确写出的模块、压缩率与参数规模；没有公开的部分（loss、solver、步数、层数）在图中直接标为未知，而不是补成看起来合理的猜测。",
+        "官方公告与模型卡写出的模块、压缩率与参数规模，加上本次直接读 ComfyUI 侧 checkpoint（safetensors 头部）核验出的层数、宽度、head 数与 VAE 内部结构；仍然没有公开的部分（loss、solver、步数、拼接顺序）在图中标为未知，而不是补成看起来合理的猜测。",
       kind:
-        "官方可确证的部分：H3-Base 两个 checkpoint（FL2VA / Ref2VA）的推理路径",
+        "官方可确证的部分 + checkpoint 核验：H3-Base 两个 checkpoint（FL2VA / Ref2VA）的推理路径与逐层结构",
+      h3Network: true,
+      hideModuleIndex: true,
+      trainingIntro: "公开资料没有给出 H3 的训练 loss、目标参数化或时间采样流程；本章只列出可确证的训练载体，并把未知项留在损失卡片中。",
+      inferenceIntro: "文本、视觉和音频编码器以及 VAE 只在推断链路中出现；H3-Context-IR 与 H3-Regenerate-2K 是闭源服务，不能画成本地开源主干模块。checkpoint 里出现的 token_refiner 与 3D latent upscaler 单列，并标明它们的证据来源。",
       modalKicker: "H3 模块",
+      networkFlow: [
+        { title: "Encoder + VAE", detail: "文本/参考视觉走 50 层编码器；视频 24 通道、音频 32 通道 latent", tone: "condition" },
+        { title: "Packed multimodal sequence", detail: "视频 token 96 维 + 音频 token 32 维 + 条件 token；MM-RoPE (t,h,w)", tone: "latent" },
+        { title: "token_refiner ×2", detail: "与主干同构的 2 层精炼模块（checkpoint 核验）", tone: "core" },
+        { title: "H3-Omni 50 层", detail: "hidden 5376、56 head × 128、SwiGLU 14336、AdaLN", tone: "core" },
+        { title: "双路输出", detail: "video_out 96 维 / audio_out 32 维 → 各自解码", tone: "output" },
+      ],
       sourcesBrief: [
         [
-          "已确证的核心数字（本次修正重点）",
-          "官方公告原文给出：H3-Encoder 取 <b>Qwen3-VL-32B 第 50 层</b> hidden states；H3-VisualVAE 为 <b>f16t4d24</b>（空间 16×、时间 4×、24 通道），视觉 latent 再按 <b>1×2×2</b> patch 化，因此进 Transformer 的 token 有效空间下采样 <b>32×</b>、时间仍 <b>4×</b>；H3-AudioVAE 把 <b>32 kHz</b> 音频压成每通道 <b>40 Hz</b> latent；主干是 <b>33B dense single-stream</b>，其中约 <b>13B</b> 参数位于 AdaLN 分支（可预计算缓存，仅推理部署无需加载）；位置编码是 <b>MM-RoPE (t,h,w)</b>。",
+          "官方公告事实（保持原样）",
+          "H3-Encoder 取 <b>Qwen3-VL-32B 第 50 层</b> hidden states；H3-VisualVAE 为 <b>f16t4d24</b>（空间 16×、时间 4×、24 通道），视觉 latent 再按 <b>1×2×2</b> patch 化，因此进 Transformer 的 token 有效空间下采样 <b>32×</b>、时间仍 <b>4×</b>；H3-AudioVAE 把 <b>32 kHz</b> 音频压成每通道 <b>40 Hz</b> latent；主干是 <b>33B dense single-stream</b>，官方称约 <b>13B</b> 参数位于 AdaLN 分支（可预计算缓存）；位置编码是 <b>MM-RoPE (t,h,w)</b>。",
         ],
         [
-          "未公开的部分",
-          "H3-Context-IR（把自由输入转成结构化 Context IR）与 H3-Regenerate-2K 都<b>没有开源</b>，只提供 API；训练损失形式、时间采样分布、solver 名称与默认步数、主干层数与 hidden size 在公开说明中未给出。稀疏注意力在训练末期引入，但首个开源版本只提供全注意力推理。",
+          "本次新增：直接读 checkpoint 核验出的结构",
+          "读 <code>minimax_h3_fl2va_pruned_int8_convrot</code> / <code>ref2va</code> / <code>qwen3vl_32b_minimax_h3_nvfp4_awq</code> / <code>minimax_h3_video_vae_fp16</code> / <code>minimax_h3_audio_vae_fp32</code> 的 safetensors 头部后确认：主干 <b>50 层、hidden 5376、56 head × head_dim 128</b>（<code>q_norm</code>/<code>k_norm</code> 做 QK-Norm，这份 checkpoint 是 MHA 而非 GQA）、<b>SwiGLU intermediate 14336</b>、视频 token <b>96</b> 维 / 音频 token <b>32</b> 维、条件投影 <b>5120 → 5376</b>；编码器 <b>50 层、hidden 5120</b>、视觉塔 <b>27 层 / 宽 1152 / patch 2 帧 × 16×16</b> + <b>3 个 deepstack merger</b>；视频 VAE 编码器是 <b>6 级 3D 因果卷积</b>、解码器是 <b>36 层 ViT</b>（宽 2048、4 个 register token）；音频 VAE 是 <b>DAC 风格</b>（SnakeBeta 激活、总下采样 <b>800×</b>、latent <b>32</b> 通道）。",
+        ],
+        [
+          "仍未公开的部分",
+          "H3-Context-IR（把自由输入转成结构化 Context IR）与 H3-Regenerate-2K 都<b>没有开源</b>，只提供 API；训练损失形式、时间采样分布、solver 名称与默认步数仍未给出；稀疏注意力在训练末期引入，首个开源版本只提供全注意力推理。packed 序列的精确拼接顺序与 token_refiner 的确切作用位置也要读推理代码。",
         ],
       ],
       stages: [
@@ -2865,30 +3401,30 @@
               id: "h3enc",
               kind: "core",
               title: "H3-Encoder（Qwen3-VL-32B）",
-              shape: "文本与视觉都送入该编码器，取第 50 层 hidden states",
-              meta: "tokenizer 增加了 &lt;d&gt; 等特殊 token，需使用官方 tokenizer 配置",
+              shape: "文本 + 视觉 patch → [B,N,5120]，50 层堆叠，取第 50 层 hidden states",
+              meta: "视觉塔：27 层、宽 1152、patch 2 帧 × 16×16、3 个 deepstack merger（4608 → 5120）；该 repack 里没有 model.norm 与 lm_head，说明只当编码器用",
               detail: true,
             },
             {
               id: "vvae",
               kind: "core",
               title: "H3-VisualVAE（f16t4d24）",
-              shape: "24 通道 latent；patch 1×2×2 → token 有效空间 32×、时间 4×",
-              meta: "时间因果视频自编码器；编码器训练后另有 ViT 解码器降低解码成本",
+              shape: "编码器 6 级 3D 因果卷积 → 24 通道 latent（conv_out 48 = μ+logσ²），latents_mean/std 各 24",
+              meta: "解码器不是卷积：36 层 ViT（宽 2048、门控 FF 8192、4 个 register token），proj_out 3072 = 3×4×16×16，每个 latent 位置还原成 (4 帧,16×16) 像素块",
               detail: true,
             },
             {
               id: "avae",
               kind: "core",
               title: "H3-AudioVAE",
-              shape: "32 kHz 立体声 → 每通道 40 Hz latent",
-              meta: "左右声道共用同一 encoder/decoder，分别处理后重新合成",
+              shape: "32 kHz 每声道 → 40 Hz latent，32 通道；总下采样 2×4×4×5×5 = 800",
+              meta: "DAC 风格：Snake/SnakeBeta 激活、编码器 5 级步长卷积、解码器 7 级转置卷积 + 21 个残差块 + 抗镜像低通滤波",
               detail: true,
             },
             op(
               "cat",
               "unified packed multimodal sequence",
-              "各模态 token 组织成一条序列，位置关系由 MM-RoPE (t,h,w) 表达；具体拼接顺序官方未公开",
+              "条件 token（5120 → 5376）、视频 token（96 维）、音频 token（32 维）组织成一条序列；位置关系由 MM-RoPE (t,h,w) 表达，精确拼接顺序未公开",
             ),
           ],
         },
@@ -2900,36 +3436,44 @@
             {
               kind: "state",
               title: "视频 latent 状态",
-              shape: "24 通道空间 × T/4 时间（具体张量布局按实现）",
+              shape: "[B,24,T/4,H/16,W/16]；逐通道乘 latents_mean / latents_std",
               meta: "T2VA 从噪声开始；FL2VA / Ref2VA 用首尾帧或参考内容约束",
             },
             {
               kind: "state",
               title: "音频 latent 状态",
-              shape: "每通道 40 Hz 的 latent 序列（≤15s → ≤600 步/通道）",
-              meta: "与视频 latent 在同一循环中同步更新，这是原生音画同步的机制来源",
+              shape: "[B,32,40×秒数]（≤15 s → ≤600 步/声道）",
+              meta: "32 通道 latent，与视频 latent 在同一循环中同步更新，这是原生音画同步的机制来源",
             },
             {
               kind: "note",
               title: "未公开",
               meta:
-                "初始化的加噪公式、噪声调度与 sigma 序列均未在公开说明中给出，必须从推理代码读取",
+                "初始化的加噪公式、噪声调度与 sigma 序列均未在公开说明中给出；checkpoint 里的 adaln_t_table 是 1025×8，可作为时间步离散化的线索，但对应关系要读推理代码",
             },
           ],
         },
         {
           id: "df-transformer",
           kicker: "第 04 步 · 每一步",
-          title: "H3-Omni-Transformer：33B dense single-stream 联合预测",
+          title: "H3-Omni-Transformer：50 层 dense single-stream 联合预测",
           nodes: [
             {
               id: "omni",
               kind: "core",
               title: "H3-Omni-Transformer",
               shape:
-                "33B dense single-stream；约 13B 参数在 AdaLN 分支（调制输出可预计算缓存）",
+                "50 层 · hidden 5376 · 56 head × head_dim 128 · SwiGLU 14336（checkpoint 核验）",
               meta:
-                "attention 与 FFN 都不含模态专属结构；模态专属参数只在输入/输出层与 AdaLN 分支",
+                "每层 18 个张量：qkv_proj 21504×5376、out_proj 5376×7168、q_norm/k_norm 128、mlp.fc1 28672×5376、mlp.fc2 5376×14336、norm1/norm2 5376、adaln_proj 96768×8；attention 与 FFN 不含模态专属结构",
+              detail: true,
+            },
+            {
+              id: "refiner",
+              kind: "core",
+              title: "token_refiner ×2",
+              shape: "与主干同构的 2 层（D=5376），另带 final_norm；合计约 771M 参数",
+              meta: "checkpoint 里独立存在（token_refiner.blocks.0/1）；它精炼的是哪一段 token 要读推理代码，本页不写成“文本精炼器”",
               detail: true,
             },
             op(
@@ -2940,9 +3484,9 @@
             {
               kind: "output",
               title: "两路预测输出",
-              shape: "video update + audio update",
+              shape: "video_out 96 维 / audio_out 32 维（final_layer 的 adaln_proj 10752×8）",
               meta:
-                "参数化形式（epsilon / v / velocity）未公开；公开说明只说“联合预测视频与音频 latent”",
+                "输出维度已核实；但参数化形式（epsilon / v / velocity）仍未公开，公开说明只说“联合预测视频与音频 latent”",
             },
           ],
         },
@@ -2974,6 +3518,16 @@
               title: "退出后解码",
               shape: "视频帧（24 FPS）+ 32 kHz 立体声",
               meta: "视觉与音频分别解码，再按时间轴封装",
+            },
+            {
+              id: "upscaler",
+              kind: "external",
+              title: "可选：3D latent upscaler（2K 路径）",
+              shape:
+                "24 通道 latent 在 latent 空间放大：18 个 in_blocks + 18 个 out_blocks、约 345M 参数",
+              meta:
+                "ComfyUI 侧提供的 checkpoint；官方 H3-Regenerate-2K 仍是闭源 API，两者要分开写",
+              detail: true,
             },
           ],
         },
@@ -3044,53 +3598,106 @@
         },
       ],
       conditionsNote:
-        "官方还提供一个重要的显存事实：AdaLN 分支的调制输出可以预计算并缓存，所以在“仅推理”部署时不加载这约 13B 参数。",
+        "官方还提供一个重要的显存事实：AdaLN 分支的调制输出可以预计算并缓存，所以在“仅推理”部署时不加载这部分参数。本次核验看到的具体形态是：共享的 <code>adaln_t_table</code>（<b>1025 × 8</b>，按时间步查表）+ 每层一个 <code>adaln_proj.linear</code>（<b>96768 × 8</b> = 18 × 5376），50 层合计约 <b>43.65M</b>（占该 repack 的 0.22%）。这与官方“约 13B 在 AdaLN 分支”不是同一份权重：社区 int8 剪枝版已经把调制网络压成查表 + 小线性层，引用时请分开写。",
       cost:
-        "33B dense 主干；官方示例用 4 卡 SGLang（<code>--ulysses-degree 4</code>）部署。输出为 768p、24 FPS、4–15 秒、32 kHz 立体声；2K 由闭源的 H3-Regenerate-2K 以 in-context 方式重生成得到。",
+        "官方完整模型是 33B dense；本地 ComfyUI repack（<code>*_pruned_int8_convrot</code>）按张量形状统计约 <b>20.1B</b>（int8，文件约 20 GB），是剪枝版，不能当作 33B 原版。官方示例用 4 卡 SGLang（<code>--ulysses-degree 4</code>）部署。输出为 768p、24 FPS、4–15 秒、32 kHz 立体声；2K 由闭源的 H3-Regenerate-2K 以 in-context 方式重生成得到（本地另有一个 3D latent upscaler checkpoint，见第 1 章模块）。",
       loss: {
         summary:
           "公开资料没有给出 H3 的训练损失形式。下面只列出可确证的目标载体；具体项与权重必须在标注处核验，不得推测。",
+        processLabel: "训练目标、采样时间与损失权重：未公开",
         flow: [
           ["多模态样本", "video + audio + text（+参考）", "按时间轴对齐", "data"],
           ["编码", "H3-Encoder / H3-VisualVAE / H3-AudioVAE", "各模态 latent 与条件", "noise"],
-          ["联合主干", "fθ(video latent, audio latent, packed context)", "33B dense single-stream", "model"],
+          ["联合主干", "fθ(video latent, audio latent, packed context)", "50 层 dense single-stream", "model"],
           ["目标项", "未公开", "是否含显式同步项也未公开", "target"],
           ["反向传播", "∇θL", "官方称发布完整权重以支持微调", "loss"],
         ],
         formula:
           "L = ？（官方公开说明未给出损失形式；不得改写成 epsilon / velocity 的 MSE，也不得虚构同步损失项）",
         target:
-          "<b>未公开</b>。需要查看训练代码或技术报告；目前只能确认 AdaLN 分支与输入/输出层含模态专属参数。",
+          "<b>未公开</b>。需要查看训练代码或技术报告；目前只能确认 AdaLN 分支与输入/输出层含模态专属参数（checkpoint 证据：每层 adaln_proj、final_layer 的 video_out / audio_out）。",
         gradient:
-          "官方发布完整权重并说明支持进一步开发与微调，但未公布官方微调脚本的可训练参数范围；实际 target_modules 必须打印 named_modules() 后决定。",
+          "官方发布完整权重并说明支持进一步开发与微调，但未公布官方微调脚本的可训练参数范围；checkpoint 里的线性层名已经可以核对：<code>blocks.N.attn.qkv_proj</code>、<code>blocks.N.attn.out_proj</code>、<code>blocks.N.mlp.fc1</code>、<code>blocks.N.mlp.fc2</code>、<code>token_refiner.blocks.N.*</code>（以及 int8 版附带的 <code>*_scale</code>）。实际 target_modules 仍必须打印 named_modules() 后决定。",
         inference:
           "H3-Context-IR 与 H3-Regenerate-2K 未开源（只在 API 提供），因此本地只能复现 768p 的 H3-Base 路径；2K 需要官方 API 配合。",
       },
+      finetuneIntro:
+        "官方尚未公开完整 H3 训练配方、官方微调脚本及完整损失函数。可以按社区 Musubi Tuner 的 MiniMax H3 文档尝试可运行的 LoRA 流程；它覆盖 FL2VA 与 Ref2VA 两类条件训练，但其中的参数、缓存和 loss 记录属于社区实现。",
       finetune: [
         [
-          "1. 先确认 checkpoint",
-          "两个任务族：H3-Base FL2VA（<code>t2va</code> / <code>fl2va</code>）与 H3-Base Ref2VA（<code>ref2va</code>）。每个仓库自带 processor、tokenizer、text_encoder、transformer、visual_vae、audio_vae，因此微调前先确认冻结哪些子模块。",
+          "1. 准备配对素材",
+          "准备目标视频、对应音频、字幕或结构化文本，以及 Ref2VA 每个样本对应的参考图/参考视频。目标媒体与字幕必须一一配对；明确音视频时间轴、帧率、分辨率、采样率和时长。",
         ],
         [
-          "2. 数据字段",
-          "video、audio、结构化文本（Context IR 形式）、fps、帧数、分辨率、音频采样率、时长、音画偏移、参考素材与授权；按作品或主体切分，验证集不要包含同一镜头的相邻片段。",
+          "2. 配置数据集与任务",
+          "按 Musubi 文档配置数据集和训练任务，先选 FL2VA（文本/首尾帧条件）或 Ref2VA（参考素材条件）。按作品或主体切分 train / validation，避免相邻片段或同一镜头泄漏到两边。",
         ],
         [
-          "3. 可训练模块",
-          "先打印模块树，把候选位置分成视觉输入/输出层、音频输入/输出层、共享 attention/FFN、AdaLN 分支与条件投影；官方未公开推荐 target_modules，<b>不要因为“Transformer”就把 LoRA 挂到所有线性层</b>。",
+          "3. 缓存条件",
+          "先缓存视频 latent、音频 latent 与文本条件，检查缓存文件和样本索引是否一一对应；参考素材也按样本缓存或关联，避免训练时才发现时间轴或路径错误。",
         ],
         [
-          "4. 冻结范围",
-          "默认冻结 H3-Encoder（Qwen3-VL-32B）与两个 VAE；只训练主干适配器是唯一可安全起步的方案，并确认没有误更新另一模态的专属层。",
+          "4. 启动 LoRA",
+          "默认冻结编码器与 VAE，只训练确认过的主干适配器；打印 named_modules() 核对 target_modules 和梯度范围，不要因模块名含 Transformer 就把 LoRA 挂到所有线性层。",
         ],
         [
-          "5. 训练目标",
-          "公开资料未给出 loss 形式；文档里不要写成“epsilon 或 velocity 的 MSE”。先跑通 forward/backward，检查梯度是否只落在预期模块。",
+          "5. 记录训练信号",
+          "社区训练器可以记录视频、音频等模态损失，也可选蒸馏或基座保持目标；这些是训练器的可观察实现，不是 MiniMax 官方公布的 H3 训练目标。",
         ],
         [
-          "6. 验收方法",
-          "画面质量、动作与身份一致性、闪烁、口型/音画同步（AV-align 类指标 + 人工盲评）、语音清晰度、条件缺失鲁棒性；不能只用单帧图像指标代替音视频联合评估，也不能只看画面指标就宣称同步良好。",
+          "6. 独立验证选 checkpoint",
+          "用未参与训练、按作品或主体隔离的验证集比较 checkpoint，检查画面、动作、身份、闪烁、语音、口型和音画同步；不要只按训练 loss 或公开案例的步数选权重。",
         ],
+      ],
+      finetuneData: {
+        intro: "最低要求是目标媒体与字幕配对；Ref2VA 参考素材按样本对应。音视频时间轴、帧率、分辨率、采样率和时长要明确，并按作品或主体切分训练集与验证集，避免相邻片段泄漏。",
+        rows: [
+          ["FL2VA 目标样本", "target video、audio、subtitle / prompt、fps、resolution、sample_rate、duration、split", "视频动作、语音清晰度、音画同步"],
+          ["Ref2VA 样本", "reference media、target video、audio、subtitle / prompt、sample 对应关系、split", "参考身份 / 构图、动作与条件一致性"],
+          ["所有样本的最低检查", "明确时间轴、帧率、分辨率、采样率、时长；按作品或主体分组切分", "独立验证集无相邻片段或同主体泄漏"],
+        ],
+        sampleTitle: "JSONL · H3 多模态样本字段示例",
+        sample: '{"video":"clips/001.mp4","audio":"clips/001.wav","subtitle":"subs/001.srt","prompt":"[Shot] a person speaks softly","fps":24,"width":768,"height":432,"sample_rate":32000,"duration":8.0,"reference":"refs/subject_a.png","split":"train"}',
+        communityIntro: "社区项目 Musubi Tuner 的 MiniMax H3 文档提供可运行的 H3 LoRA 流程，包含 FL2VA 与 Ref2VA 两类条件训练。它是实践入口，不代表 MiniMax 官方已经发布同等内容。",
+        communityLink: '<a href="https://github.com/AkaneTendo25/musubi-tuner/blob/minimax-h3/docs/minimax_h3.md" target="_blank" rel="noopener">Musubi Tuner · MiniMax H3 文档（社区）</a>',
+        configIntro: "这是社区文档中的入门配置示例，用来先跑通流程；rank / alpha、精度、优化器、学习率、batch size 和 checkpoint 选择都应按你的数据与显存重新验证。",
+        config: [
+          ["LoRA rank / alpha", "16 / 16", "示例容量与缩放，不是官方推荐值"],
+          ["精度", "BF16", "依赖硬件与训练器支持"],
+          ["优化器", "AdamW8bit", "降低优化器状态显存"],
+          ["学习率", "1e-4", "社区入门示例，需观察 loss 与验证集"],
+          ["batch size", "1", "常见显存约束下的示例"],
+          ["gradient checkpointing", "启用", "以计算换显存，速度会受影响"],
+        ],
+        nextStep: "先用少量、配对准确的数据跑通缓存和 LoRA；检查训练器的 loss、梯度和验证样例，再扩大数据或增加训练步数。公开案例的硬件和步数不是最低门槛，也不是通用建议。",
+      },
+      finetuneLoss: {
+        summary: "官方没有公开 H3 的完整训练配方、官方微调脚本、目标参数化或完整损失函数，因此不能断言使用 epsilon MSE、velocity MSE 或某个特定音画同步损失。",
+        formula: "L_finetune = 官方未知；社区训练器的 loss / 蒸馏 / 基座保持项以其配置和日志为准",
+        note: "社区实现可以把视频、音频等模态损失分别记录，或启用可选的蒸馏与基座保持目标；这些实现不能改写成 MiniMax 官方训练目标。验收时同时看 loss、梯度和独立验证样例。",
+      },
+      finetuneCases: [
+        {
+          title: "Cseti CrossView Warp LoRA",
+          meta: "Ref2VA · rank/alpha 32/32 · AdamW8bit · learning rate 1e-4 · 计划 6,000 steps，发布第 3,500 步权重 · 记录 96 GB RTX PRO 6000",
+          summary: "这是一个 Ref2VA 的跨视角 warp LoRA 案例，参数和训练进度可在模型页核查。",
+          limit: "单一项目的配置与硬件记录，不能推出最低显存、通用步数或普适效果。",
+          link: '<a href="https://huggingface.co/Cseti/MiniMax-H3_Ref2VA-LoRA-CrossView-Warp_v1" target="_blank" rel="noopener">查看 Hugging Face 模型页</a>',
+        },
+        {
+          title: "Akatz Labs Character Swap LoRA",
+          meta: "rank/alpha 16/16 · AdamW8bit · learning rate 5e-5 · 1,000 steps",
+          summary: "该案例公开了 Character Swap LoRA 的训练设置，可作为参数记录的对照。",
+          limit: "其替换目标主要是静态图像，不能据此推断长视频角色替换能力。",
+          link: '<a href="https://huggingface.co/akatz-ai/MiniMax-H3-Character-Swap-LoRA" target="_blank" rel="noopener">查看 Hugging Face 模型页</a>',
+        },
+        {
+          title: "Alibaba PAI Acc LoRAs",
+          meta: "推理加速蒸馏案例",
+          summary: "这是面向推理加速的蒸馏 LoRA 发布，目标是减少推理成本。",
+          limit: "它不等同于普通任务 LoRA，不能直接作为主体、风格或角色任务的训练配方。",
+          link: '<a href="https://huggingface.co/alibaba-pai/MiniMax-H3-Acc-LoRAs" target="_blank" rel="noopener">查看 Hugging Face 模型页</a>',
+        },
       ],
       sources: [
         {
@@ -3114,30 +3721,79 @@
           evidence:
             "说明推理入口与部署方式；scheduler / solver 名称与步数必须从这里读取，不能推测。",
         },
+        {
+          item: "本次核验：主干逐层结构（本地 checkpoint）",
+          links:
+            "<code>diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors</code> · <code>minimax_h3_ref2va_pruned_int8_convrot.safetensors</code>",
+          evidence:
+            "读 safetensors 头部（932 个张量）得到：<code>blocks.0–49</code> 共 <b>50 层</b>；每层 18 个张量 —— <code>attn.qkv_proj</code> 21504×5376（= 3 × 7168）、<code>attn.out_proj</code> 5376×7168、<code>q_norm</code>/<code>k_norm</code> 128、<code>mlp.fc1</code> 28672×5376、<code>mlp.fc2</code> 5376×14336、<code>norm1</code>/<code>norm2</code> 5376、<code>adaln_proj</code> 96768×8；顶层有 <code>adaln_t_table</code> 1025×8、<code>condition_proj</code> 5376×5120、<code>video_patch_proj</code> 5376×96、<code>audio_patch_proj</code> 5376×32、<code>final_layer.video_out</code> 96 / <code>audio_out</code> 32、<code>rope.inv_freq</code> 16、<code>token_refiner</code> 2 层。按形状统计约 <b>20.1B</b> 参数（剪枝 + int8）。",
+        },
+        {
+          item: "本次核验：条件编码器与两个 VAE",
+          links:
+            "<code>text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors</code> · <code>vae/minimax_h3_video_vae_fp16.safetensors</code> · <code>vae/minimax_h3_audio_vae_fp32.safetensors</code>",
+          evidence:
+            "编码器：50 层 / hidden 5120 / vocab 151936 / GQA <b>64:8</b> / SwiGLU 12800，视觉塔 27 层宽 1152 + <code>patch_embed</code> Conv3d(2,16,16) + <b>3 个 deepstack merger</b>。视频 VAE：编码器 <b>6 级 3D 因果卷积</b>（<code>conv_out</code> 48 = 2×24、<code>latents_mean/std</code> 24）、解码器 <b>36 层 ViT</b>（宽 2048、<code>proj_out</code> 3072 = 3×4×16×16、4 个 register token）。音频 VAE：DAC 风格（SnakeBeta 激活、步长 2/4/4/5/5 合计 <b>800×</b>、latent <b>32</b> 通道、7 级转置卷积 + 21 个残差块 + 抗镜像低通滤波）。",
+        },
+        {
+          item: "本次核验：2K 路径的 3D latent upscaler",
+          links:
+            "<code>latent_upscale_models/minimax_h3_latent_upscaler_3d_fp16.safetensors</code>",
+          evidence:
+            "<code>conv_in</code> 512×24×3×3×3、<b>18 个 in_blocks + 18 个 out_blocks</b>（偶数块是带时间条件的 ResBlock3D：<code>emb_layers</code> 1024×64；奇数块是时间轴深度可分离卷积 <code>dwconv</code> 512×1×5×1×1 + <code>pwconv</code> 1×1×1）、<code>conv_out</code> 24×512×3×3×3，约 345M 参数。它是社区侧提供的放大模块；官方 Regenerate-2K 仍只通过 API 提供。",
+        },
       ],
       unknown: [
-        "主干层数、hidden size、head 数：读 transformer/config.json。",
         "训练损失形式、时间采样分布、guidance/CFG 蒸馏的具体做法：官方公开说明未给出。",
-        "solver 名称、默认步数与 sigma 表：读推理脚本或 pipeline 默认参数。",
-        "各模态 token 在 packed 序列中的拼接顺序与位置编码细节：公开说明只给出“统一 packed 序列 + MM-RoPE (t,h,w)”。",
-        "H3-Context-IR 与 H3-Regenerate-2K 为闭源服务；本地 H3-Base 只能直接输出 768p。",
+        "solver 名称、默认步数与 sigma 表：读推理脚本或 pipeline 默认参数；<code>adaln_t_table</code> 的 1025 个时间步只能作为线索，不能当结论。",
+        "各模态 token 在 packed 序列中的拼接顺序、<code>token_refiner</code> 的作用位置、MM-RoPE 在 (t,h,w) 上的轴分配：公开说明只给出“统一 packed 序列 + MM-RoPE (t,h,w)”。",
+        "稀疏注意力的实现细节（官方称训练末期引入，首个开源版本只提供全注意力）。",
+        "H3-Context-IR 与 H3-Regenerate-2K 为闭源服务；本地 H3-Base 直接输出 768p，2K 需要官方 API（本地 latent upscaler 属于社区路径，不是官方 Regenerate-2K 本身）。",
+        "官方 33B 原始权重与本页核验的 20.1B 剪枝 int8 版之间的逐层差异：以官方仓库的 Revision 为准。",
         "微调脚本、推荐 target_modules 与完整许可条款：以模型卡 License 与官方示例为准，本页不代替许可审查。",
       ],
       modules: {
         h3enc: {
-          title: "H3-Encoder",
+          title: "H3-Encoder（Qwen3-VL-32B）",
           meta:
-            "官方说明：使用完整预训练的 Qwen3-VL-32B 权重，向主干提供第 50 层 hidden states。",
+            "checkpoint 核验：LLM 50 层、hidden 5120、vocab 151936、GQA 64:8、SwiGLU 12800；视觉塔 27 层、宽 1152、patch Conv3d(2,16,16)、3 个 deepstack merger。",
           diagram:
-            '<div class="md-title">H3-Encoder（官方公开信息）</div>' +
+            '<div class="md-title">H3-Encoder：文本 + 视觉条件的张量路径（checkpoint 核验）</div>' +
             '<div class="md-flow md-vertical">' +
-            '<div class="md-pill">文本 token + 视觉 patch（tokenizer 含 &lt;d&gt; 等特殊 token）</div>' +
-            '<span>↓ 使用完整预训练的 Qwen3-VL-32B</span>' +
-            '<div class="md-pill md-pill-purple">第 50 层 hidden states</div>' +
-            '<span>↓ 投影为条件 token（投影形式未公开）</span>' +
-            '<div class="md-pill md-pill-output">进入 H3-Omni-Transformer 的 packed 序列</div>' +
+            '<div class="md-pill md-pill-blue">文本 token ids <code>[B,N_text]</code>（vocab 151936）<br />图像 / 视频帧 <code>[B,3,T,H,W]</code></div>' +
+            '<span>↓ 视觉塔 PatchEmbed：<code>proj</code> Conv3d(k=2×16×16) 3→1152，tubelet = 2 帧 × 16×16 像素</span>' +
+            '<div class="md-pill md-pill-purple">+ <code>pos_embed</code>（2304 = 48×48）<br />ViT block ×<b>27</b>：attn qkv 3456、proj 1152，MLP 1152→4304→1152<br /><code>[B,N_img,1152]</code></div>' +
+            '<span>↓ merger：2×2 相邻 token 拼接 → 4608 → Linear 4608×4608 → GELU → Linear <b>4608→5120</b></span>' +
+            '<div class="md-pill md-pill-amber">视觉 token <code>[B,N_img/4,5120]</code><br />另有 <b>3 个 deepstack merger</b>（<code>deepstack_merger_list.0–2</code>）从 ViT 不同深度各出一路 5120 维 token</div>' +
+            '<span>↓ 与文本 embedding 在序列维拼接，进入 Qwen3-VL 解码器堆叠 ×<b>50</b></span>' +
+            '<div class="md-pill md-pill-purple">每层：input_layernorm → GQA（q 64 head / kv 8 head × d_head 128，带 q_norm/k_norm）→ post_attention_layernorm → SwiGLU（gate/up 12800）<br />取<b>第 50 层</b> hidden states <code>[B,N,5120]</code></div>' +
+            '<span>↓ <code>condition_proj</code>：Linear <b>5120 → 5376</b>（与主干 hidden 对齐）</span>' +
+            '<div class="md-pill md-pill-output">条件 token <code>[B,N_cond,5376]</code><br />作为 packed 序列的一段</div>' +
+            '<div class="md-side-note">这份 H3 专用 repack 里<b>没有 <code>model.norm</code> 与 <code>lm_head</code></b>，说明它只当编码器用；因此官方说的“第 50 层”就是这个 50 层堆叠的最后一层输出（index 49），不是「最后一层之后再过 final norm」。</div>' +
             "</div>" +
-            '<div class="md-caption">“取第 50 层”是官方明确写出的实现细节，因此不能写成“最后一层输出”。第 50 层之后的部分如何使用，公开资料未说明。</div>',
+            '<div class="md-caption">deepstack 是 Qwen3-VL 特有的结构：除了主 merger，还从 ViT 的三个深度各取一份特征做同样的 merge，一起交给 LLM，用来补回被 merger 压掉的细粒度视觉信息。这类多模态编码器的完整通用结构见下方虚线框。</div>',
+          generic: {
+            title: "多模态条件编码器（ViT + merger + decoder-only LLM）",
+            note:
+              "官方只公开“使用完整预训练的 Qwen3-VL-32B 权重、向主干提供第 50 层 hidden states”。框内是这类多模态条件编码器的完整通用结构。",
+            mermaid: [
+              "flowchart TD",
+              '  t0["文本 prompt<br/>input_ids [B,N_txt]"]:::in --> te["token embedding<br/>[B,N_txt,D_llm]"]:::core',
+              '  i0["参考图 / 视频帧<br/>[B,3,H,W] 或 [B,3,T,H,W]"]:::in --> pe["PatchEmbed：Conv2d/Conv3d(k=14,s=14)<br/>[B,N_img,D_vit] + 位置编码"]:::core',
+              '  pe --> vit["ViT blocks ×L_v<br/>窗口注意力与全局注意力交替<br/>[B,N_img,D_vit]"]:::attn',
+              '  vit --> mer["Merger：2×2 token 合并 + MLP<br/>[B,N_img/4,D_llm]"]:::cond',
+              '  te --> seq["concat(seq)：文本 embedding 与视觉 token<br/>[B,N_txt+N_img/4,D_llm]"]:::latent',
+              "  mer --> seq",
+              '  seq --> llm["decoder-only LLM 堆叠 ×L<br/>RMSNorm + GQA attention(RoPE) + SwiGLU<br/>[B,N,D_llm]"]:::attn',
+              '  llm --> tap["取指定层的 hidden states<br/>（H3-Encoder：第 50 层）<br/>[B,N,D_enc]"]:::out',
+              '  tap --> proj["条件投影 / 对齐（形式与维度未公开）<br/>[B,N,D_model]"]:::out',
+              '  proj --> packed["作为 packed 序列的条件段<br/>每步被主干重新读取"]:::latent',
+            ].join("\n"),
+            facts:
+              "<b>三个必须写清楚的边界：</b>① 视觉 token 先过 ViT 塔、再经 merger 降采样，之后才和文本 embedding 在<b>序列维</b>拼接；② 官方说的<b>第 50 层</b>就是这个 50 层堆叠的最后一层输出（index 49）——该 repack 里没有 <code>model.norm</code>，所以不存在“再过一次 final norm”这一步；③ 从 <code>D_enc</code> 到主干宽度 <code>D_model</code> 的投影在 H3 里已核实是 <code>condition_proj</code> 的 5120 → 5376，其它模型仍要读 config。",
+            linkHref: "index.html#atlas-mm-encoder",
+            linkText: "通用模块图鉴 18：多模态条件编码器的完整张量级结构 →",
+          },
           input: ["文本 token，以及视觉输入经该编码器处理的 token。"],
           output: ["第 50 层 hidden states，投影为条件 token 序列。"],
           role: [
@@ -3148,19 +3804,42 @@
         vvae: {
           title: "H3-VisualVAE（f16t4d24）",
           meta:
-            "时间因果视频自编码器；空间压缩 16×、时间压缩 4×、24 通道 latent；patch 1×2×2。",
+            "时间因果视频自编码器：空间 16×、时间 4×、24 通道 latent；编码器是 3D 因果卷积，解码器是 36 层 ViT（checkpoint 核验）。",
           diagram:
-            '<div class="md-title">H3-VisualVAE 与 patch 化（官方数字）</div>' +
+            '<div class="md-title">H3-VisualVAE：视频帧到视觉 latent token（checkpoint 核验）</div>' +
             '<div class="md-flow md-vertical">' +
-            '<div class="md-pill md-pill-blue">视频 [B,3,T,H,W]</div>' +
-            '<span>↓ 时间因果 VAE 编码器：空间 16×、时间 4×、24 通道</span>' +
-            '<div class="md-pill md-pill-purple">latent [B,24,T/4,H/16,W/16]</div>' +
-            '<span>↓ patch 1×2×2（time × height × width）</span>' +
-            '<div class="md-pill">token 网格：时间下采样仍 4×，空间下采样变为 32×</div>' +
-            '<span>↓ 主干联合预测 → 解码</span>' +
-            '<div class="md-pill md-pill-output">ViT 解码器还原像素（官方称其降低解码成本并改善重建）</div>' +
+            '<div class="md-pill md-pill-blue">视频帧 <code>x_v [B,3,T,H,W]</code><br />RGB、时间长度 <code>T</code>、空间尺寸 <code>H×W</code></div>' +
+            '<span>↓ 编码器：<code>conv_in</code> 3→128（k=3×3×3）；<b>6 级 down</b>，每级 2 个 ResBlock3D（<code>conv1/conv2</code> + <code>norm1/norm2</code>，通道变化用 <code>nin_shortcut</code> 1×1×1）；其中 <b>4 级带 downsampler</b>（通道 128→256→512→512→1024）</span>' +
+            '<div class="md-pill md-pill-purple"><code>norm_out</code> 1024 → <code>conv_out</code> <b>48</b>×1024×3×3×3（= 2×24：μ 与 logσ²）<br />→ <code>quant_conv</code> 1×1×1 → 重参数化采样 → <code>post_quant_conv</code> 24×24×1×1×1<br />latent <code>z_v [B,24,T/4,H/16,W/16]</code>，逐通道乘 <code>latents_mean</code> / <code>latents_std</code>（各 24 个）</div>' +
+            '<span>↓ patch 1×2×2：reshape / permute（时间 × 高 × 宽）</span>' +
+            '<div class="md-pill md-pill-amber">token 网格 <code>N_v=(T/4)(H/32)(W/32)</code><br />每个 token 携带 <code>24×1×2×2=96</code> 个值 → <code>video_patch_proj</code> <b>5376×96</b></div>' +
+            '<div class="md-pill md-pill-output">视频 token <code>[B,N_v,5376]</code><br />与条件 token（5120→5376）、音频 token（32→5376）一起进 packed 序列</div>' +
+            '<div class="md-side-note"><b>解码器不是卷积</b>：<code>x_embedder</code> 24→2048 → <b>36 层 ViT</b>（宽 2048、<code>to_qkv</code> 6144、门控 FF <code>w1</code> 16384=<code>w2</code>×2、<code>norm1/norm2</code> + 可学习 <code>scale1/scale2</code>、<code>mask_token</code>、<b>4 个 register token</b>）→ <code>proj_out</code> <b>3072</b>×2048。参数分布：编码侧约 <b>180M</b>、解码侧约 <b>2.42B</b>。</div>' +
             "</div>" +
-            '<div class="md-caption">24 通道与 SD/FLUX(16)、SDXL(4) 都不同；<b>16×</b> 是 VAE 的空间压缩率，<b>32×</b> 是 patch 之后 token 网格的有效空间下采样，写文档时不能混用这两个数字。</div>',
+            '<div class="md-caption">上面是这份 checkpoint 的真实层序（读 safetensors 头部得到），不再只是通用参考实现。两个值得注意的地方：① 解码器是纯 ViT，<b>没有 U-Net 式 skip</b>，因为每个 latent 位置直接展开成 (4 帧, 16×16) 像素块；② 官方说“另用 ViT 解码器降低解码成本”，但参数上解码器反而更大（2.42B vs 180M）——它省的是高分辨率下的卷积计算量，而不是参数。</div>',
+          generic: {
+            title: "H3-VisualVAE（f16t4d24，checkpoint 核验）",
+            note:
+              "虚线框内是这条 VAE 的真实结构：编码器 6 级 3D 因果卷积（4 级下采样、通道 128→1024），尾部输出 48 通道（μ 与 logσ²）；解码器是 36 层 ViT，proj_out 3072 直接展开成 (4 帧,16×16) 像素块。",
+            mermaid: [
+              "flowchart TD",
+              '  x["视频帧 x<br/>[B,3,T,H,W]"]:::in --> cin["conv_in：CausalConv3d 3→128（k=3×3×3）<br/>[B,128,T,H,W]"]:::core',
+              '  cin --> l0["encoder.down.0：2×ResBlock3D（128）<br/>+ downsampler（空间 2×、时间 2×）<br/>[B,128,T/2,H/2,W/2]"]:::core',
+              '  l0 --> l1["encoder.down.1：2×ResBlock3D（128→256）+ nin_shortcut<br/>+ downsampler（空间 2×、时间 2×）<br/>[B,256,T/4,H/4,W/4]"]:::core',
+              '  l1 --> l2["encoder.down.2：2×ResBlock3D（256）<br/>+ downsampler（只压空间）<br/>[B,256,T/4,H/8,W/8]"]:::core',
+              '  l2 --> l3["encoder.down.3：2×ResBlock3D（256→512）+ nin_shortcut<br/>+ downsampler（只压空间）<br/>[B,512,T/4,H/16,W/16]"]:::core',
+              '  l3 --> l4["encoder.down.4：2×ResBlock3D（512）<br/>encoder.down.5：2×ResBlock3D（512→1024）<br/>这两级不再下采样"]:::core',
+              '  l4 --> q["norm_out 1024 → conv_out 48（= 2×24）<br/>quant_conv 1×1×1 → μ, logσ² [B,24,T/4,H/16,W/16]"]:::out',
+              '  q --> z["重参数化采样 z = μ + σ ⊙ ε<br/>再按 latents_mean / latents_std 逐通道缩放"]:::op',
+              '  z --> patch["patch 1×2×2 → [B,N_v,96]<br/>video_patch_proj：Linear 96→5376"]:::latent',
+              '  z --> vdec["ViT 解码器：x_embedder 24→2048<br/>36×（to_qkv 6144 + 门控 FF 8192）<br/>4 个 register token + mask_token"]:::attn',
+              '  vdec --> vout["norm_out → proj_out 3072（= 3×4×16×16）<br/>每个 latent 位置展开成 (4 帧, 16×16) 像素块 → RGB"]:::out',
+            ].join("\n"),
+            facts:
+              "<b>每一项都能在 checkpoint 里对上：</b>6 级 down、<b>4 级带 downsampler</b>（空间合计 16×）、通道 128→256→512→512→1024、<code>conv_out</code> 48 = 2×24、<code>latents_mean/std</code> 各 24、解码器 <b>36 层 ViT</b>（<code>proj_out</code> 3072）、4 个 register token。<b>张量名看不出来的两点：</b>时间轴的 2 次下采样具体落在哪两级、重建损失的形式与权重——都要读代码。左右声道无关，这是视频 VAE。",
+            linkHref: "index.html#atlas-video-vae",
+            linkText: "通用模块图鉴 15：时间因果视频 VAE 的通用结构与算例 →",
+          },
           input: ["视频或图像帧序列 [B,3,T,H,W]。"],
           output: [
             "24 通道 latent；按 1×2×2 patch 化后进入主干。解码由 ViT 解码器完成。",
@@ -3173,17 +3852,43 @@
         avae: {
           title: "H3-AudioVAE",
           meta:
-            "32 kHz 立体声；每通道 latent 时间率 40 Hz；左右声道共用同一编解码器。",
+            "32 kHz 立体声；每声道 40 Hz latent、32 通道；左右声道共用同一编解码器。checkpoint 显示它是 DAC 风格的波形 VAE（SnakeBeta 激活）。",
           diagram:
-            '<div class="md-title">H3-AudioVAE（官方数字）</div>' +
+            '<div class="md-title">H3-AudioVAE：波形到音频 latent token（checkpoint 核验）</div>' +
             '<div class="md-flow md-vertical">' +
-            '<div class="md-pill md-pill-blue">立体声 waveform 32 kHz</div>' +
-            '<span>↓ 左右声道分别编码（共用同一 encoder）</span>' +
-            '<div class="md-pill md-pill-purple">每通道 40 Hz latent token</div>' +
-            '<span>↓ 与视频 latent 在同一主干中联合预测</span>' +
-            '<div class="md-pill md-pill-output">解码 → 两通道重新合成 32 kHz 立体声</div>' +
+            '<div class="md-pill md-pill-blue">立体声 waveform <code>x_a [B,2,S]</code><br />采样率 32 kHz；<code>S=32000×时长(秒)</code></div>' +
+            '<span>↓ 左右声道分别处理（<code>conv_in</code> 是 <b>1→64</b> k=7，即每次只吃一个声道），权重共享</span>' +
+            '<div class="md-pill md-pill-purple">编码器 5 级下采样：每级 3 个残差单元（Snake → k=7 卷积 → Snake → k=1 卷积）+ 步长卷积<br />步长 <b>2 / 4 / 4 / 5 / 5</b>，通道 64→128→256→512→1024→2048<br />合计 <code>2×4×4×5×5 = 800</code></div>' +
+            '<div class="md-pill md-pill-amber"><code>block.6</code> Snake(2048) → <code>block.7</code> Conv1d k=3 → <code>mean_proj</code> / <code>logs_proj</code>（32×32×1）<br />latent <code>z_a [B,32,40×秒数]</code>，逐通道乘 <code>latents_mean/std</code>（32 个）</div>' +
+            '<span>↓ 主干输入投影：<code>audio_patch_proj</code> <b>5376×32</b>（每个音频 token 32 个值）</span>' +
+            '<div class="md-pill md-pill-output">音频 token <code>[B,N_a,5376]</code><br />与视频 token（96→5376）、条件 token（5120→5376）在同一 packed 序列中交互</div>' +
+            '<div class="md-side-note">解码器同样不是纯卷积：<code>pre_block</code> 先在 latent / 特征序列上做一次注意力（<code>qkv</code> 6144×2048、带 <code>zero_k_bias</code>，另有一条 32 维支路），<code>dec_in_proj</code>（2048×32×1）把 32 通道 latent 投到 2048 维，<code>conv_pre</code> 1024×2048×7 之后进入 <b>7 级转置卷积</b>（通道 1024→512→256→128→64→32→16→8）与 <b>21 个残差块</b>（每级 3 个，SnakeBeta），最后由 <code>activation_post</code>（Snake + 1×1×12 低通滤波）与 <code>conv_post</code> 输出单声道波形。</div>' +
             "</div>" +
-            '<div class="md-caption">官方说明其 latent 设计参考 VA-VAE 思路以兼顾重建质量与可学习性；具体损失未公开。40 Hz 意味着 15 秒对应约 600 个 latent 步。</div>',
+            '<div class="md-caption">15 秒音频对应每声道约 <b>600</b> 个 latent 时间位置（40×15）；由于 latent 是 32 通道，每声道的时间位置数与 token 数不是一回事，packed 序列里的 token 划分方式仍以推理代码为准。整条音频 VAE 约 151M 参数（编码 73.7M / 解码 77.5M），比视频 VAE 的 2.6B 小一个数量级。</div>',
+          generic: {
+            title: "H3-AudioVAE（checkpoint 核验）",
+            note:
+              "虚线框内是这条音频 VAE 的真实结构：单声道各自过共享权重，编码器 5 级步长卷积把 32 kHz 压到 40 Hz（合计 800×），latent 32 通道；解码器先做一次注意力再 7 级转置卷积回波形。",
+            mermaid: [
+              "flowchart TD",
+              '  x["立体声波形<br/>[B,2,S] · 32 kHz"]:::in --> stem["encoder.block.0：Conv1d 1→64（k=7）<br/>（每声道单独输入，权重共享）"]:::core',
+              '  stem --> e1["encoder.block.1：3×（Snake→k=7 卷积→Snake→k=1 卷积）<br/>+ 步长卷积 k=4（stride 2）<br/>[64→128 通道，S/2]"]:::core',
+              '  e1 --> e2["encoder.block.2：3×残差单元 + 步长卷积 k=8（stride 4）<br/>128→256 通道，S/8"]:::core',
+              '  e2 --> e3["encoder.block.3：3×残差单元 + 步长卷积 k=8（stride 4）<br/>256→512 通道，S/40"]:::core',
+              '  e3 --> e4["encoder.block.4：3×残差单元 + 步长卷积 k=10（stride 5）<br/>512→1024 通道，S/200"]:::core',
+              '  e4 --> e5["encoder.block.5：3×残差单元 + 步长卷积 k=10（stride 5）<br/>1024→2048 通道，S/800 = 40 Hz"]:::core',
+              '  e5 --> q["block.6 Snake(2048) → block.7 Conv1d k=3<br/>mean_proj / logs_proj → μ, logσ² [B,32,40·秒]"]:::out',
+              '  q --> z["重参数化采样 + latents_mean/std 逐通道缩放<br/>32 通道 latent"]:::op',
+              '  z --> enc2["audio_patch_proj：Linear 32→5376<br/>作为 packed 序列的音频 token"]:::latent',
+              '  z --> pre["解码：pre_block（注意力 qkv 6144×2048 + zero_k_bias）<br/>dec_in_proj 2048×32×1"]:::attn',
+              '  pre --> dec["conv_pre 1024×2048×7<br/>7 级转置卷积（1024→512→256→128→64→32→16→8）<br/>21 个残差块（每级 3 个，SnakeBeta）"]:::core',
+              '  dec --> out["activation_post（Snake + 1×1×12 低通滤波）<br/>conv_post 1×8×7 → 单声道波形，再按声道合成"]:::out',
+            ].join("\n"),
+            facts:
+              "<b>可以从 checkpoint 直接确认的：</b>每个声道单独过共享权重（<code>conv_in</code> 是 1→64）、<b>5 级下采样步长 2/4/4/5/5 合计 800</b>（32000 ÷ 40 ✓）、<b>latent 32 通道</b>（<code>latents_mean/std</code> 各 32）、DAC 风格的 Snake/SnakeBeta 激活、解码器 7 级转置卷积 + 21 个残差块 + 抗镜像低通滤波，整条 VAE 约 151M 参数。<b>仍需读代码的：</b><code>pre_block</code> 里 32 维支路的确切作用、量化方式（是否有残差 VQ）以及 packed 序列中音频 token 的划分细节。",
+            linkHref: "index.html#atlas-audio-vae",
+            linkText: "通用模块图鉴 16：音频 VAE 的通用结构与算例 →",
+          },
           input: [
             "立体声音频。参考音频必须与图像或视频输入一起使用（官方限制：音频不能作为唯一输入）。",
           ],
@@ -3194,21 +3899,51 @@
         omni: {
           title: "H3-Omni-Transformer",
           meta:
-            "33B dense single-stream；约 13B 参数在 AdaLN 分支；MM-RoPE (t,h,w)。",
+            "checkpoint 核验：50 层、hidden 5376、56 head × head_dim 128、q_norm/k_norm、SwiGLU 14336、每层一个 adaln_proj；MM-RoPE (t,h,w)。",
           diagram:
-            '<div class="md-title">H3-Omni-Transformer（官方公开信息）</div>' +
+            '<div class="md-title">H3-Omni-Transformer：单一序列内的张量流（checkpoint 核验）</div>' +
             '<div class="md-flow md-vertical">' +
-            '<div class="md-pill md-pill-blue">统一 packed 多模态序列 + MM-RoPE (t,h,w)</div>' +
-            '<span>↓ 模态专属输入层（模态专属结构之一）</span>' +
-            '<div class="md-pill md-pill-purple">dense single-stream attention（无模态专属结构）</div>' +
-            '<span>↓ FFN（同样无模态专属结构）</span>' +
-            '<div class="md-pill md-pill-amber">模态专属 AdaLN 分支（约 13B 参数，调制输出可预计算缓存）</div>' +
-            '<span>↓ 联合预测</span>' +
-            '<div class="md-pill">video latent 与 audio latent 两路输出</div>' +
-            '<span>↓ 模态专属输出层</span>' +
-            '<div class="md-pill md-pill-output">video update + audio update</div>' +
+            '<div class="md-pill md-pill-blue">条件 token <code>[B,N_c,5376]</code>（condition_proj 5120→5376）<br />+ 视频状态 <code>[B,N_v,5376]</code>（96→5376）+ 音频状态 <code>[B,N_a,5376]</code>（32→5376）</div>' +
+            '<span>↓ concat(seq)：组成统一 packed 序列（精确顺序未公开）</span>' +
+            '<div class="md-pill md-pill-purple"><code>x [B,N_total,5376]</code>；<code>N_total=N_c+N_v+N_a</code></div>' +
+            '<span>↓ <code>rope.inv_freq</code> 共 16 个频率：对 Q/K 施加 MM-RoPE (t,h,w)</span>' +
+            '<div class="md-pill md-pill-amber">融合 QKV 投影 <code>qkv_proj 21504×5376</code>（= 3 × 7168）<br /><code>Q,K,V [B,56,N_total,128]</code>；<code>q_norm</code>/<code>k_norm</code> 各 128（对 head_dim 做 QK-Norm）</div>' +
+            '<span>↓ attention read：<code>softmax(QKᵀ/√128)·V</code> → <code>out_proj 5376×7168</code></span>' +
+            '<div class="md-pill">residual add + <code>norm1</code>（5376，仅 weight）</div>' +
+            '<span>↓ 模态专属 AdaLN 调制：<code>adaln_proj 96768×8</code>（= 18 × 5376），输入是共享查表 <code>adaln_t_table</code>（1025 × 8）</span>' +
+            '<div class="md-pill md-pill-amber"><code>$x_2 = x_1 \\odot (1 + \\mathrm{scale}) + \\mathrm{shift}$</code><br />这是 AdaLN 的标准表达；18 组调制向量如何分配给各个子层要看推理代码</div>' +
+            '<span>↓ 共享 FFN：SwiGLU <code>fc1 28672×5376</code>（gate+up = 2×14336）→ <code>fc2 5376×14336</code> → residual add（<code>norm2</code>）</span>' +
+            '<div class="md-pill md-pill-output">每层输出 <code>[B,N_total,5376]</code>，共 <b>50 层</b><br />按 token 类型 split(seq)</div>' +
+            '<span>↓ <code>final_layer</code>：norm 5376 + adaln_proj 10752×8（= 2×5376），两路输出头 <code>video_out 96×5376</code> / <code>audio_out 32×5376</code></span>' +
+            '<div class="md-pill md-pill-output">video update <code>[B,N_v,96]</code> + audio update <code>[B,N_a,32]</code></div>' +
+            '<div class="md-side-note"><b>仍然不能确定：</b>18 组 AdaLN 调制向量的分配方式、各模态 token 的确切边界、输出参数化（epsilon / v / velocity）和训练 loss。checkpoint 已经能确认的是：50 层、hidden 5376、56×128 的 MHA + QK-Norm（这份 repack 不是 GQA）、SwiGLU 14336、单个融合 qkv_proj、每层独立 adaln_proj。</div>' +
+            '<div class="md-side-note"><b>关于“约 13B 参数在 AdaLN 分支”：</b>这份社区 int8 剪枝版里 AdaLN 相关只占约 <b>43.65M</b>（0.22%），形态是「1025×8 的时间步查表 + 每层 96768×8 的小线性层」。引用官方那句说法时要注明它指的是官方完整权重，不能和这份剪枝 repack 混写。</div>' +
             "</div>" +
-            '<div class="md-caption">官方明确：attention 与 FFN 都不含模态专属结构，模态专属参数只在输入/输出层与 AdaLN 分支。因此“视频分支 / 音频分支”不是两套独立的 Transformer 层，画成两条并行主干会失真。稀疏注意力在训练末期引入以降低长序列成本，但首个开源版本只提供全注意力推理。</div>',
+            '<div class="md-caption">理解方式：视频和音频不是两条独立 Transformer 主干，而是带有不同输入 / 输出层的 token 段，共享同一套 attention 与 FFN；<code>concat</code> 发生在序列维，<code>residual add</code> 要求形状一致，<code>split</code> 只按 token 边界拆回各模态。</div>',
+          generic: {
+            title: "H3-Omni-Transformer 的一个 block（50 层同构，checkpoint 核验）",
+            note:
+              "checkpoint 核验：50 层、hidden 5376、单个融合 qkv_proj（21504×5376 = 3×7168，即 56 head × 128）、q_norm/k_norm 做 QK-Norm、SwiGLU 14336、每层一个 adaln_proj 96768×8；框内是这一层的完整张量流。",
+            mermaid: [
+              "flowchart TD",
+              '  x["packed 序列 [B,N_total,5376]<br/>条件 token + 视频 token + 音频 token"]:::in --> norm["AdaLN 调制（每层一份 adaln_proj 96768×8 = 18×5376）<br/>输入是共享查表 adaln_t_table（1025×8）"]:::norm',
+              '  norm --> qkv["融合 QKV 投影：qkv_proj 21504×5376<br/>[B,56,N_total,128]"]:::core',
+              '  qkv --> qk["q_norm / k_norm（各 128）<br/>对 head_dim 做 QK-Norm"]:::op',
+              '  qk --> rope["MM-RoPE (t,h,w) 作用于 Q/K<br/>rope.inv_freq 共 16 个频率"]:::op',
+              '  rope --> attn["joint attention：所有 token 共享 K/V<br/>softmax(QKᵀ/√128)·V"]:::attn',
+              '  attn --> res1["out_proj 5376×7168 → residual add（norm1）"]:::core',
+              '  res1 --> ffn["共享 FFN（SwiGLU）：fc1 28672×5376<br/>（gate + up = 2×14336）→ fc2 5376×14336"]:::core',
+              '  ffn --> res2["residual add（norm2）"]:::out',
+              '  res2 --> repeat["该层输出 [B,N_total,5376]<br/>共 50 层（blocks.0–49）"]:::core',
+              '  repeat --> split["final_layer：norm 5376 + adaln_proj 10752×8<br/>按 token 边界 split(seq)"]:::op',
+              '  split --> vhead["video_out 96×5376<br/>video update [B,N_v,96]（= 24×1×2×2）"]:::out',
+              '  split --> ahead["audio_out 32×5376<br/>audio update [B,N_a,32]"]:::out',
+            ].join("\n"),
+            facts:
+              "<b>已经从 checkpoint 确认：</b>50 层 single-stream（视频与音频共享 attention 与 FFN）、hidden 5376、<b>56 head × head_dim 128</b> 的 MHA + QK-Norm（这份 repack 不是 GQA，不要照抄官方示意图里的 GQA 说法）、SwiGLU intermediate 14336、单个融合 qkv_proj、每层独立 <code>adaln_proj</code>、视频/音频输出头分别是 96 / 32 维。<b>仍要读代码：</b>18 组 AdaLN 调制向量如何分配给各子层、各模态 token 边界、输出参数化与训练 loss。<b>关于“约 13B 在 AdaLN 分支”：</b>那是官方完整权重的说法；这份社区 int8 剪枝版里 AdaLN 相关只有约 43.65M（0.22%），形态是查表 + 每层小线性层。",
+            linkHref: "index.html#atlas-single-stream",
+            linkText: "通用模块图鉴 13.2：单流 AdaLN 主干的通用结构对照 →",
+          },
           input: [
             "packed 多模态序列（文本/参考条件 token + 视频 latent token + 音频 latent token）与 MM-RoPE 位置信息。",
           ],
@@ -3217,6 +3952,50 @@
             "在同一序列内联合建模视频与音频，使口型、动作与声音节奏在生成阶段建立关系，而不是后期 mux。",
           ],
           repeat: ["每个 sampling step 执行一次；步数未公开。"],
+        },
+        refiner: {
+          title: "token_refiner ×2",
+          meta:
+            "checkpoint 里独立存在的一组精炼模块：2 层，结构与主干 block 同构（D=5376、56×128、SwiGLU 14336），另有 token_refiner.final_norm；合计约 771M 参数。",
+          diagram:
+            '<div class="md-title">token_refiner：与主干同构的 2 层</div>' +
+            '<div class="md-flow md-vertical">' +
+            '<div class="md-pill md-pill-blue">输入 token 序列（哪一段 token 由推理代码决定）</div>' +
+            '<span>↓ token_refiner.blocks.0 / blocks.1：norm1 → attn（qkv_proj 21504×5376、out_proj 5376×7168、q_norm/k_norm 128）→ norm2 → SwiGLU（fc1 28672×5376、fc2 5376×14336）</span>' +
+            '<div class="md-pill md-pill-purple">每层结构与主干 block 完全一致，只是没有 adaln_proj（时间调制）这一支</div>' +
+            '<span>↓ token_refiner.final_norm</span>' +
+            '<div class="md-pill md-pill-output">精炼后的 token，形状不变</div>' +
+            "</div>" +
+            '<div class="md-caption">它在论文与公告里都没有出现，是从 checkpoint 的张量名发现的模块。可以确定的是层数、宽度与参数量；它作用在「条件 token」还是「整条 packed 序列」上，必须读推理代码，本页不推测。</div>',
+          input: ["某一段 token 序列。"],
+          output: ["同形状的精炼后 token（2 层堆叠 + final_norm）。"],
+          role: [
+            "在主干之外做一次额外的 token 精炼。三处证据：命名独立于 blocks.*、结构与主干同构、参数量约 771M（相当于 2 个主干层）。",
+          ],
+          repeat: ["每次前向一次（是否在每个采样步重算取决于推理实现）。"],
+        },
+        upscaler: {
+          title: "3D latent upscaler（2K 路径，社区侧 checkpoint）",
+          meta:
+            "约 345M 参数；conv_in 512×24×3×3×3、18 个 in_blocks + 18 个 out_blocks、conv_out 24×512×3×3×3，偶数块带时间条件（emb_layers 1024×64），奇数块是时间轴深度可分离卷积。",
+          diagram:
+            '<div class="md-title">3D latent upscaler：24 通道 latent 在 latent 空间放大</div>' +
+            '<div class="md-flow md-vertical">' +
+            '<div class="md-pill md-pill-blue">latent [B,24,T,H,W]（768p 路径的输出）</div>' +
+            '<span>↓ <code>conv_in</code> 512×24×3×3×3 → [B,512,T,H,W]</span>' +
+            '<div class="md-pill md-pill-purple">时间步 → <code>embed.0/2</code>（64×1 → 64 → 64）→ 每块的 <code>emb_layers</code> 1024×64</div>' +
+            '<span>↓ 18 个 in_blocks：偶数块 = 带时间条件的 ResBlock3D（in_layers/out_layers/out_norm）；奇数块 = 时间轴块（dwconv 512×1×5×1×1 + norm + pwconv 512×512×1×1×1）</span>' +
+            '<div class="md-pill md-pill-amber">18 个 out_blocks（同样的奇偶交替）</div>' +
+            '<span>↓ <code>conv_out</code> 24×512×3×3×3</span>' +
+            '<div class="md-pill md-pill-output">放大后的 latent [B,24,T′,H′,W′] → 交给同一套 VisualVAE 解码</div>' +
+            "</div>" +
+            '<div class="md-caption">这是 ComfyUI 侧提供的放大模块，官方公告里的 H3-Regenerate-2K 仍是闭源 API。两件事不要混写：本地能跑这个 upscaler，不代表能在本地复现官方 2K 服务的全部行为（它可能还依赖额外的条件与迭代重生成）。</div>',
+          input: ["24 通道视频 latent（例如 768p 路径的输出）。"],
+          output: ["24 通道放大后的 latent。"],
+          role: [
+            "在 latent 空间放大分辨率，避免直接在像素域超分；时间轴用深度可分离卷积专门处理，空间与通道由 ResBlock3D 处理。",
+          ],
+          repeat: ["每次生成一次，不在采样循环内。"],
         },
       },
     },
@@ -3243,6 +4022,12 @@
   // 避免同一张图在模块弹窗和正文里出现两种不一致的画法。
   reader.querySelectorAll("[data-skeleton]").forEach((slot) => {
     slot.innerHTML = unetSvg(slot.dataset.skeleton);
+  });
+
+  // 页面正文里的通用模块完整结构插槽（与模块弹窗共用 genericStructures 的定义）。
+  reader.querySelectorAll("[data-generic]").forEach((slot) => {
+    const spec = genericStructures[slot.dataset.generic];
+    if (spec) slot.innerHTML = gnBlock(spec);
   });
 
   const currentPage = location.pathname.split("/").pop();

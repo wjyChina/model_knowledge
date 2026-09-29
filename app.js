@@ -6,13 +6,13 @@
     "training-objectives",
     "checkpoint-inspector",
     "vision-anatomy",
+    "module-atlas",
     "image-principles",
     "video-anatomy",
     "video-principles",
     "finetune",
     "lora-injection",
     "distill",
-    "labs",
     "image-models",
     "video-models",
     "workflows",
@@ -22,6 +22,7 @@
     "parallel",
     "distributed-train",
     "parallel-lab",
+    "labs",
     "sources",
   ];
   chapters.sort(
@@ -68,7 +69,7 @@
       ["SD 1.5 / SDXL", "image-sdxl.html"],
       ["SD3.5", "image-dit.html"],
       ["FLUX.1 / FLUX.2", "image-flux.html"],
-      ["Qwen-Image / Edit", "image-qwen.html#edit"],
+      ["Qwen-Image / Edit", "image-qwen.html#network"],
     ];
     const modelRows = imageModels.querySelectorAll("tbody tr");
     modelRows.forEach((row) => {
@@ -546,6 +547,98 @@
         "结构控制分支",
         "复制或旁路 U-Net 的多尺度特征，用 zero-conv/adapter 注入姿态、深度、边缘等控制信号。",
       ],
+      [
+        "SNR / λ_t",
+        "信噪比 / log-SNR",
+        "SNR(t)=ᾱ_t/(1−ᾱ_t) 衡量这一刻信号与噪声的比值；λ_t=log SNR 是同一件事的对数写法，v-prediction 与加权损失都按它来定义。",
+      ],
+      [
+        "Schedule / sigma 表",
+        "噪声调度 / 推理时间表",
+        "beta schedule 决定训练时 ᾱ_t 的曲线；sigma 表是推理时实际使用的每一步噪声水平，由 timesteps 采样方式（leading/trailing/Karras）与 shift 生成，两者不是同一张表。",
+      ],
+      [
+        "ε / v / x₀ / velocity",
+        "四种预测参数化",
+        "同一份权重可以回归噪声 ε、干净 latent x₀、速度 v 或 flow 的 velocity；三者之间可以互相换算，但必须与该 checkpoint 的 prediction_type 和 sampler 匹配。",
+      ],
+      [
+        "Sampler / solver",
+        "推理求解器",
+        "把模型预测变成下一步 latent 的数值公式：DDIM 是确定性一步式，Euler 是 ODE 一阶积分，Heun/DPM-Solver++ 是二阶多步，FlowMatch Euler 是流匹配侧的同款欧拉积分。换 sampler 通常要连 sigma 表一起换。",
+      ],
+      [
+        "Guidance distillation",
+        "引导蒸馏",
+        "把 guidance 直接训进网络（权重里带 guidance 输入），推理时一次前向即可；它的引导行为是学出来的，不等同于普通 CFG，也不能再叠加一次双前向 CFG。",
+      ],
+    ],
+    "module-atlas": [
+      [
+        "ViT block",
+        "视觉 Transformer 块",
+        "把图像切成 patch 当 token，用标准 Transformer 编码器处理；一个 block = LayerNorm → 多头自注意力 → 残差 → LayerNorm → MLP → 残差，和语言模型 block 的唯一区别在输入（patch embedding）与位置编码。",
+      ],
+      [
+        "AdaLN",
+        "Adaptive Layer Normalization，自适应层归一化",
+        "用条件向量生成归一化的 scale / shift（以及门控 gate），把时间步、pooled 文本等「全局条件」注入每个 block。AdaLN-Zero 把 gate 初始化为 0，让 block 一开始是恒等映射。",
+      ],
+      [
+        "AdaGN",
+        "Adaptive Group Normalization",
+        "U-Net 里的时间条件注入方式：在 ResNet block 的 GroupNorm 之后用时间向量做 scale / shift。作用与 AdaLN 相同，位置不同。",
+      ],
+      [
+        "SwiGLU",
+        "Swish-Gated Linear Unit，门控前馈网络",
+        "gate = SiLU(xW_g) 与 up = xW_u 逐元素相乘后再降维；中间宽度常取 8/3·D。LLaMA / Qwen / H3 用这一种，FLUX 的 ff.net 是 GELU 门控。",
+      ],
+      [
+        "Transformer2DModel",
+        "空间 Transformer 块",
+        "U-Net 里插在 ResNet 之间的模块：把特征图展平成 token 做 self-attention 与 cross-attention（读文本 K/V），再折回特征图并残差相加。",
+      ],
+      [
+        "U-Net 整机",
+        "多尺度卷积主干",
+        "down → mid → up 的卷积主干，同尺度 skip feature 在通道维拼接。SDXL 是 3 级、2 个 downsampler、Mid 在 h/4；SD 1.5 是 4 级、3 个 downsampler、Mid 在 h/8。",
+      ],
+      [
+        "tubelet",
+        "时间块",
+        "视频 patch 化时带时间维的块，例如 1×2×2（一帧 × 2×2 像素）或 2×2×2。它决定视频 token 的有效时间步长与空间步长。",
+      ],
+      [
+        "MM-RoPE",
+        "多模态旋转位置编码",
+        "把 head_dim 分成几段，每段负责一个轴（t/h/w）做旋转变换，使视频、音频、文本 token 能在同一条 packed 序列里表达三维位置关系。",
+      ],
+      [
+        "GQA",
+        "Grouped-Query Attention，分组查询注意力",
+        "多个 Q head 共享一组 K/V head（例如 64:8），在几乎不掉质量的前提下减少 KV cache 与显存；LLaMA / Qwen 系列与 H3-Encoder 在用。",
+      ],
+      [
+        "QK-Norm",
+        "对 Q/K 的归一化",
+        "在算注意力分数前对 Q、K 各做一次 RMSNorm / LayerNorm，稳定深层训练；SD3.5 的 qk_norm=rms_norm 与 FLUX 都用了。",
+      ],
+      [
+        "merger",
+        "视觉 token 合并器",
+        "把 ViT 输出里 2×2 相邻 token 拼接后经 MLP 投影到 LLM 宽度，token 数除以 4；Qwen3-VL 还有 3 个 deepstack merger 从不同深度各取一路。",
+      ],
+      [
+        "MoE",
+        "Mixture of Experts，混合专家",
+        "用 router 给每个 token 打分并只送进 top-k 个 FFN 专家，再按权重求和；总参数量大、每个 token 的激活量小，代价是 all-to-all 通信与负载均衡。",
+      ],
+      [
+        "scaling factor",
+        "latent 缩放系数",
+        "训练时约定的常数，把 VAE latent 的标准差拉到 ≈1 以匹配加噪公式的假设；进主干前乘、回像素前必须除回去（漏除是最常见的复现 bug）。",
+      ],
     ],
     "video-anatomy": [
       [
@@ -973,14 +1066,22 @@
       button.className = "toc-link" + (chapter.id === active ? " active" : "");
       button.dataset.target = chapter.id;
       const number = document.createElement("span");
-      const marker = chapter.dataset.title.match(/^(结构|\d+)/);
+      // 侧栏的角标：结构专章用 S、实验章用 E、附录用「附」，带编号的章节用两位数字。
+      // 没有可识别前缀的（如「阅读指南」）退回它在书里的位置序号。
+      const marker = chapter.dataset.title.match(/^(结构|实验|资料|\d+)/);
       number.textContent = marker
         ? marker[1] === "结构"
           ? "S"
-          : marker[1].padStart(2, "0")
+          : marker[1] === "实验"
+            ? "E"
+            : marker[1] === "资料"
+              ? "附"
+              : marker[1].padStart(2, "0")
         : String(chapters.indexOf(chapter)).padStart(2, "0");
       const title = document.createElement("span");
-      title.textContent = chapter.dataset.title.slice(5);
+      // 只去掉「01 · 」「结构 · 」「实验 · 」「资料 · 」这类短前缀；像「阅读指南」这种
+      // 没有前缀的标题要原样保留，否则侧栏会只剩序号、没有文字。
+      title.textContent = chapter.dataset.title.replace(/^[^\s·]{1,6}\s*·\s*/, "");
       button.append(number, title);
       button.addEventListener("click", () => {
         chapter.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -997,6 +1098,39 @@
     }
   }
 
+  // 左侧目录跟随页面上下滚动：
+  // 拖动页面滚动条时，当前激活的章节项会被滚到目录可视区中间，
+  // 所以导航栏会跟着页面上下滑动；用户自己在目录里滚动时先让位，避免互相抢滚动。
+  let tocHoldUntil = 0;
+
+  function keepTocVisible(id) {
+    if (!id || Date.now() < tocHoldUntil) return;
+    const button = toc.querySelector('.toc-link[data-target="' + id + '"]');
+    if (!button) return;
+    if (!toc.clientHeight) return;
+    const tocRect = toc.getBoundingClientRect();
+    const buttonRect = button.getBoundingClientRect();
+    const delta =
+      buttonRect.top +
+      buttonRect.height / 2 -
+      (tocRect.top + tocRect.height / 2);
+    if (Math.abs(delta) < 6) return;
+    const reduce =
+      window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    toc.scrollBy({ top: delta, behavior: reduce ? "auto" : "smooth" });
+  }
+
+  ["wheel", "touchstart", "pointerdown"].forEach((type) =>
+    toc.addEventListener(
+      type,
+      () => {
+        tocHoldUntil = Date.now() + 1600;
+      },
+      { passive: true },
+    ),
+  );
+
   function setActive(id) {
     active = id;
     const index = chapters.findIndex((chapter) => chapter.id === id);
@@ -1008,11 +1142,15 @@
       .forEach((button) =>
         button.classList.toggle("active", button.dataset.target === id),
       );
+    keepTocVisible(id);
   }
 
   renderToc();
   setActive(active);
-  search.addEventListener("input", () => renderToc(search.value));
+  search.addEventListener("input", () => {
+    renderToc(search.value);
+    requestAnimationFrame(() => keepTocVisible(active));
+  });
   document
     .getElementById("menu")
     .addEventListener("click", () => sidebar.classList.toggle("open"));

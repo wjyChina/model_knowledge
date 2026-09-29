@@ -114,7 +114,8 @@
             <p class="lead">
               <strong>前置条件：</strong>读者已经学完
               Token、Embedding、Attention、RoPE、RMSNorm、MLP、SwiGLU 和完整
-              Transformer Block。
+              Transformer Block。（RMSNorm 只除均方根、不减均值，前面只顺带提过一句；
+              它的定义与和 LayerNorm 的区别见 <a href="#module-atlas">02 · 通用模块图鉴 §4</a>。）
             </p>
             <p>
               <strong>本章任务：</strong>使用
@@ -343,8 +344,8 @@ python examples/inspect_checkpoint.py meta-llama/Llama-3.1-8B --revision MAIN_RE
             <h3>从线性映射开始</h3>
             <p>
               对一组权重可写
-              <code>q = clip(round(x / s) + z, qmin, qmax)</code>，反量化
-              <code>x_hat = s(q - z)</code>。对称量化通常
+              <code>$q = \mathrm{clip}(\mathrm{round}(x/s) + z,\ q_{\min},\ q_{\max})$</code>，反量化
+              <code>$x_{\text{hat}} = s\,(q - z)$</code>。对称量化通常
               <code>z=0</code>；per-channel/per-group
               比全张量共享尺度更能照顾离群值，却要保存更多元数据。<strong
                 >W4A16</strong
@@ -1046,7 +1047,8 @@ vllm serve Qwen/Qwen3-0.6B --dtype bfloat16 --max-model-len 4096</code></pre>
               </li>
               <li>
                 用相同总 token 数比较，而不是只比较某次短跑的瞬时速度；报告
-                scaling efficiency = 单卡吞吐 ÷（卡数 × 多卡吞吐）。
+                scaling efficiency = 多卡吞吐 ÷（卡数 × 单卡吞吐）——理想线性加速时它等于
+                1，低于 1 的部分就是通信、气泡或负载不均的代价。
               </li>
               <li>
                 看通信与计算是否重叠；若通信等待占比高，减少跨卡同步或改变并行维度，不是继续加卡。
@@ -1210,8 +1212,8 @@ torchrun --standalone --nproc_per_node=2 train.py</code></pre>
               <div class="arch-card">
                 <h4>因果注意力</h4>
                 <p>
-                  <code>A=softmax((QKᵀ)/√d_head + causal_mask)</code>，再算
-                  <code>O=AV</code>，拼接各 head 后过 <code>Wo</code>。第 i 个
+                  <code>$A = \mathrm{softmax}\!\left(\dfrac{QK^\top}{\sqrt{d_{\text{head}}}} + M\right)$</code>，再算
+                  <code>$O = AV$</code>，拼接各 head 后过 <code>$W_o$</code>。第 i 个
                   token 不能读取 i 之后的 token。
                 </p>
               </div>
@@ -1307,7 +1309,7 @@ torchrun --standalone --nproc_per_node=2 train.py</code></pre>
                   <tr>
                     <td><code>g</code></td>
                     <td><code>x</code>，不是切片后的子张量</td>
-                    <td><code>g = gate_proj(x) = xW_g^T + b_g</code></td>
+                    <td><code>g = gate_proj(x) = x W_g^T + b_g</code></td>
                     <td><code>[B,S,d_ff]</code></td>
                     <td>gate 支路的未激活分数；每个中间通道都有一个值。</td>
                   </tr>
@@ -1321,7 +1323,7 @@ torchrun --standalone --nproc_per_node=2 train.py</code></pre>
                   <tr>
                     <td><code>u</code></td>
                     <td>同一个 <code>x</code></td>
-                    <td><code>u = up_proj(x) = xW_u^T + b_u</code></td>
+                    <td><code>u = up_proj(x) = x W_u^T + b_u</code></td>
                     <td><code>[B,S,d_ff]</code></td>
                     <td>up 支路的内容值；它与 gate 支路使用另一套权重。</td>
                   </tr>
@@ -1338,7 +1340,7 @@ torchrun --standalone --nproc_per_node=2 train.py</code></pre>
                   <tr>
                     <td><code>y</code></td>
                     <td><code>h</code></td>
-                    <td><code>y = down_proj(h) = hW_d^T + b_d</code></td>
+                    <td><code>y = down_proj(h) = h W_d^T + b_d</code></td>
                     <td><code>[B,S,d_model]</code></td>
                     <td>把中间宽度压回残差宽度，成为 MLP 更新量。</td>
                   </tr>
@@ -1534,7 +1536,7 @@ for n, p in model.named_parameters():
                   </tr>
                   <tr>
                     <td>可自动评分的策略行为</td>
-                    <td>rollout + reward + PPO/RLOO/GRPO 类在线 RL</td>
+                    <td>rollout + reward + 在线 RL：<b>PPO</b> 需要额外的 critic 网络估计 advantage；<b>RLOO</b>（REINFORCE Leave-One-Out）用同一 prompt 的多个回答互相做基线，省掉 critic；<b>GRPO</b>（Group Relative Policy Optimization）同样用组内相对优势，是当前开源偏好训练里最常见的省显存做法</td>
                     <td>prompt 集、生成轨迹、逐项奖励</td>
                     <td>奖励、任务成功率、KL、拒答和越界率</td>
                   </tr>
@@ -1691,7 +1693,7 @@ for n, p in model.named_parameters():
                   先做 SFT policy；再用 prompt + 多个回答训练 reward
                   model；rollout 得到回答和 log-prob；RM 给 scalar reward；用
                   value head/GAE 算 advantage；PPO 以 clipped ratio 更新
-                  policy，并加入 <code>KL(πθ || πref)</code> 惩罚。需要同时保存
+                  policy，并加入 <code>$\mathrm{KL}(\pi_\theta \,\|\, \pi_{\text{ref}})$</code> 惩罚。需要同时保存
                   policy、reference、RM、value、optimizer 和 rollout
                   版本，工程成本最高但可以在线探索。
                 </p>
@@ -1810,7 +1812,7 @@ for n, p in model.named_parameters():
               </div>
               <div class="formula-row">
                 <span
-                  ><code>L = -sum m_t log p(y_t|x_&lt;t) / sum m_t</code></span
+                  ><code>$L = -\dfrac{\sum_t m_t\,\log p(y_t \mid x_{&lt;t})}{\sum_t m_t}$</code></span
                 ><span><code>m_t=0</code>：prompt token 不回传</span>
               </div>
               <figcaption>
@@ -1819,6 +1821,17 @@ for n, p in model.named_parameters():
               </figcaption>
             </div>
             <h3>从 logits 到 LoRA 梯度</h3>
+            <p>
+              这里先用得到 LoRA，所以先把它的最小定义说清楚（完整挂载点与实操见
+              <a href="#lora-injection">07 · LoRA 的真实挂载点</a>）：<strong
+                >LoRA 不改原来的权重 <code>W</code></strong
+              >，而是在它旁边并联两个小矩阵：<code>$h = Wx + \frac{\alpha}{r} B A x$</code>，其中
+              <code>$A \in \mathbb{R}^{r \times k}$</code>、<code>$B \in \mathbb{R}^{d \times r}$</code>，<code>r</code>
+              远小于 <code>d</code>、<code>k</code>（常见 4–64），<code>$\alpha/r$</code>
+              是缩放系数。训练时冻结 <code>W</code>，只有 <code>A</code>、<code>B</code>
+              接收梯度与优化器状态；推理时可以把 <code>$\Delta W = \frac{\alpha}{r}BA$</code>
+              加回 <code>W</code>，所以不增加推理延迟。这就是下面这段梯度路径要讲的「冻结了什么、什么还在算梯度」。
+            </p>
             <p>
               交叉熵对最后一层 logits 的梯度是 <code>p - one_hot(y)</code>。它沿
               LM head、最后一层、所有被使用的 block 反向传播；当基座参数
@@ -1839,7 +1852,7 @@ for n, p in model.named_parameters():
                 <tbody>
                   <tr>
                     <td>Causal LM</td>
-                    <td><code>-log p(y_t | y_&lt;t, x)</code></td>
+                    <td><code>$-\log p(y_t \mid y_{&lt;t}, x)$</code></td>
                     <td>下一个 token 标签</td>
                     <td>忘记 shift；padding 未 mask</td>
                   </tr>
@@ -1853,8 +1866,7 @@ for n, p in model.named_parameters():
                     <td>DPO</td>
                     <td>
                       <code
-                        >-log sigma(beta[(log pi+ - log pi-) - (log pi_ref+ -
-                        log pi_ref-)])</code
+                        >$-\log \sigma\left(\beta\left[(\log \pi^+ - \log \pi^-) - (\log \pi_{\text{ref}}^+ - \log \pi_{\text{ref}}^-)\right]\right)$</code
                       >
                     </td>
                     <td>chosen/rejected 相对偏好</td>
@@ -1862,13 +1874,13 @@ for n, p in model.named_parameters():
                   </tr>
                   <tr>
                     <td>扩散 epsilon/v</td>
-                    <td><code>||f_theta(z_t,t,c)-target||^2</code></td>
+                    <td><code>$\|f_\theta(z_t,t,c)-\text{target}_t\|^2$</code></td>
                     <td>随机时间点的噪声或速度 target</td>
                     <td>跨 scheduler 复用错误 target</td>
                   </tr>
                   <tr>
                     <td>Flow matching</td>
-                    <td><code>||v_theta(z_t,t,c)-u_t||^2</code></td>
+                    <td><code>$\|v_\theta(z_t,t,c)-u_t\|^2$</code></td>
                     <td>概率路径速度场</td>
                     <td>把 solver 当成训练网络</td>
                   </tr>
@@ -1923,21 +1935,255 @@ for n, p in model.named_parameters():
             class="chapter"
             id="vision-anatomy"
             data-group="图像与视频"
-            data-title="01 · 通用模块与损失函数"
+            data-title="01 · 基础知识"
           >
-            <div class="eyebrow">通用基础 / 模块、数据流与损失</div>
-            <h2>图像与视频的通用模块：先把词和数据流讲清楚</h2>
+            <div class="eyebrow">通用基础 / 概念、公式与损失</div>
+            <h2>基础知识：把生成模型里的词、公式和损失讲清楚</h2>
             <p class="lead">
-              这一章只讲不同模型共享的基础接口和训练目标。先理解像素、latent、VAE、patchify、token、DiT、attention、MLP、时间条件、scheduler 与
-              epsilon/v/velocity loss；之后再讲视频时空结构、微调与蒸馏，最后按图像和视频任务进入具体模型。模型特有的层数和参数不会在这里假装成“通用结构”。
+              这一章只讲<strong>概念、公式和损失</strong>：输入张量长什么样、latent
+              与 patchify 是什么意思、扩散与流匹配在算什么、噪声调度和 sigma
+              表从哪来、sampler 与 scheduler 有什么区别、CFG
+              为什么有效、训练时到底优化什么。每个模块的<strong>逐层结构</strong>放在下一章《通用模块图鉴》里画。
             </p>
             <div class="chapter-rule">
-              <strong>本章通用知识</strong
+              <strong>本章覆盖</strong
               ><span
-                >VAE / latent / patchify / unpatchify / DiT / U-Net / condition
-                / scheduler</span
+                >输入张量（图像 / 视频 / 音频）/ 归一化 / latent / patchify ·
+                token / 上下采样 · 扩散与流匹配 / 训练目标（ε · v · x₀ ·
+                velocity）/ 噪声调度与 sigma 表 / sampler · scheduler ·
+                solver / CFG · guidance / 条件路径 / 损失函数 / 通用与特色的边界</span
               >
             </div>
+
+            <h3 id="input-tensors">
+              先把输入说清楚：图像 / 视频 / 音频变成张量后长什么样
+            </h3>
+            <p>
+              后面所有模型都在同一种输入上工作：<strong
+                >带 batch 的稠密浮点张量（dense tensor）</strong
+              >。磁盘上的 PNG、MP4、WAV 只是压缩过的字节流，必须先解码、重排维度、归一化到模型训练时用的值域，才会成为主干看到的第一个张量。这一节把三种模态的
+              <strong>轴含义、值域、dtype、维度顺序和显存账</strong>
+              一次讲清；文本不属于这次范围，它进模型时是
+              <code>[B,N]</code> 的 int64 token id，再由 embedding 表变成
+              <code>[B,N,D]</code>。
+            </p>
+            <div class="gn-frame">
+              <div class="gn-frame-head">
+                <div>
+                  <strong>三种模态：从磁盘文件到第一颗张量</strong>
+                  <small
+                    >虚线框内是一条完整路径：解码 → 维度重排（HWC → NCHW）→
+                    归一化 → 交给主干或 VAE。框里写的是每步之后的张量形状与值域。</small
+                  >
+                </div>
+                <span class="gn-badge">模型看到的第一个张量</span>
+              </div>
+              <pre class="mermaid-lite" data-ml-label="图像 / 视频 / 音频的输入张量">
+flowchart TD
+  img["图像文件 PNG / JPEG<br/>uint8、0–255、按 HWC 存盘"]:::in --> imgt["图像张量 [B,3,H,W]<br/>/255 → [0,1]，再 ×2−1 → [−1,1]<br/>fp32 / fp16 / bf16"]:::core
+  vid["视频文件 MP4<br/>按 fps 解码成帧序列"]:::in --> vidt["视频张量 [B,3,T,H,W]<br/>T = fps × 秒数 + 1<br/>例：24 fps × 5 s → T = 121"]:::core
+  aud["音频文件 WAV / FLAC<br/>PCM 采样点（int16 或 float32）"]:::in --> audt["音频张量 [B,2,S]<br/>S = 采样率 × 秒数<br/>例：32 kHz × 15 s → S = 480000"]:::core
+  imgt --> ienc["图像 VAE 空间 8×<br/>[B,4,128,128]（1024² 为例）"]:::out
+  vidt --> venc["视频 VAE 空间 16× / 时间 4×<br/>[B,C,T/4,H/16,W/16]"]:::out
+  audt --> aenc["音频 VAE 总下采样 800×<br/>每声道 40 Hz latent"]:::out
+              </pre>
+              <p class="gn-note">
+                <b>三条链路的共同点：</b>都先补齐 batch 维、把通道维放到第 2
+                位（PyTorch 的 NCHW 家族）、把数值缩放到训练时的值域，再交给主干。<b
+                  >不同点：</b
+                >图像只有空间两轴，视频多一条时间轴且帧数由 fps 决定，音频是波形采样点、通道只有左右两声道。压缩率、latent
+                通道数、时间率都是 checkpoint 事实，必须读各自的 VAE config。
+              </p>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>模态</th>
+                    <th>磁盘上的形态</th>
+                    <th>进模型的第一颗张量</th>
+                    <th>每个轴的含义</th>
+                    <th>值域与 dtype</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>图像</td>
+                    <td>PNG / JPEG，uint8，按 <code>HWC</code> 存盘</td>
+                    <td><code>[B,3,H,W]</code></td>
+                    <td>
+                      B = 一个 batch 里的图片数；3 = RGB；H/W = 像素高宽（不是
+                      latent 尺寸）
+                    </td>
+                    <td>
+                      解码后是 <code>0–255</code> 的 uint8，先 <code>/255</code> 到
+                      <code>[0,1]</code>，再 <code>×2−1</code> 到
+                      <code>[−1,1]</code>；模型里用 fp32 / fp16 / bf16
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>视频</td>
+                    <td>MP4 / MKV，按 fps 解码成帧序列</td>
+                    <td><code>[B,3,T,H,W]</code></td>
+                    <td>
+                      T = 帧数，<code>T = fps × 秒数 + 1</code>（首尾帧都算），其余轴同图像
+                    </td>
+                    <td>
+                      与图像相同：逐帧 <code>[−1,1]</code>；帧数增加时显存按 T 线性增长
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>音频</td>
+                    <td>WAV / FLAC，PCM 采样点</td>
+                    <td>
+                      <code>[B,2,S]</code>（也常见 <code>[B,S,2]</code>）
+                    </td>
+                    <td>
+                      2 = 左右声道；S = 采样点数，<code>S = 采样率 × 秒数</code>
+                    </td>
+                    <td>
+                      波形本身就在 <code>[−1,1]</code>（int16 要先
+                      <code>/32768</code>）；fp32 / fp16
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              还有一类音频表示要分清：<strong>波形（waveform）</strong>是
+              <code>[B,2,S]</code>，采样率决定 S；<strong
+                >频谱 / 梅尔谱（spectrogram / mel）</strong
+              >是先做 STFT 再取梅尔滤波器，形状是
+              <code>[B,1,T_mel,F]</code> 或 <code>[B,T_mel,F]</code>，其中
+              <code>F</code> 是频点数（常见 80 / 128），<code
+                >T_mel = 1 + S/hop</code
+              >（例如 32 kHz、帧移 640 个采样点 = 20 ms，则每秒 50 帧，15 秒约
+              751 帧）。扩散类音频 VAE 一般直接压波形；声学建模（ASR
+              等）更常用梅尔谱。两者不是一回事：混起来会让「音频 latent
+              时间率 40 Hz」这类数字失去意义，看到音频配置时要先确认说的是哪一种。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>维度顺序写法</th>
+                    <th>谁在用</th>
+                    <th>换成 PyTorch 模型输入时要做什么</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>[B,H,W,C]</code>（NHWC）</td>
+                    <td>TensorFlow、多数图像库和手机相册 API</td>
+                    <td>
+                      <code>permute(0,3,1,2)</code> 把通道提到第 2 位，否则卷积核会把
+                      W 当成通道
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><code>[B,C,H,W]</code>（NCHW）</td>
+                    <td>PyTorch 与绝大多数扩散模型（SD / SDXL / DiT / FLUX）</td>
+                    <td>不用改，这是主干的默认输入布局</td>
+                  </tr>
+                  <tr>
+                    <td><code>[B,T,C,H,W]</code></td>
+                    <td>部分视频库、TensorFlow 视频管线</td>
+                    <td>
+                      与 <code>[B,C,T,H,W]</code> 只差一次 permute，但 T
+                      的位置必须在代码里核对：混了会把「时间」当成「通道」
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><code>[B,S,2]</code></td>
+                    <td>部分音频库（torchaudio 的常见返回）</td>
+                    <td>
+                      转置成 <code>[B,2,S]</code>；写反了左右声道会被当成两个相邻采样点
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>同一段素材</th>
+                    <th>原始张量</th>
+                    <th>元素数</th>
+                    <th>fp16 显存</th>
+                    <th>压缩成 latent 之后</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>1024×1024 单张图</td>
+                    <td><code>[1,3,1024,1024]</code></td>
+                    <td>约 3.1 M</td>
+                    <td>约 6.3 MB</td>
+                    <td>
+                      <code>[1,4,128,128]</code>（空间 8×）约 0.13 MB
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>720p、5 秒、24 fps</td>
+                    <td><code>[1,3,121,720,1280]</code></td>
+                    <td>约 335 M</td>
+                    <td>约 669 MB</td>
+                    <td>
+                      <code>[1,24,31,45,80]</code>（f16t4d24：空间 16×、时间 4×）约 5.4 MB
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>32 kHz 立体声、15 秒</td>
+                    <td><code>[1,2,480000]</code></td>
+                    <td>约 0.96 M</td>
+                    <td>约 1.9 MB</td>
+                    <td>每声道 600 个 latent 时间位置（40 Hz）</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="tensor-example">
+              <b>把账算一遍：为什么必须先压缩再进主干</b>
+              <p>
+                原始像素和波形都是「稠密」的：图像
+                <code>3×1024×1024</code>，视频
+                <code>3×121×720×1280</code>（5 秒 720p），音频
+                <code>2×480000</code>。<code>[B,3,1024,1024]</code>
+                在 fp16 下约 6.3 MB，压成 <code>[B,4,128,128]</code> latent 后只有约
+                0.13 MB，相差约 48 倍。视频这条更夸张：原始张量约 3.35 亿个数、fp16
+                下约 669 MB，压成 <code>[B,24,31,45,80]</code> 只剩约 268 万个数、约
+                5.4 MB，相差约 125 倍。
+              </p>
+              <p>
+                这个倍数可以自己拆开核对：视频 VAE
+                的每个 latent 位置对应 <code>16×16</code> 空间块 × <code>4</code>
+                帧时间块，也就是 <code>3×16×16×4 = 3072</code> 个原始数值，被压成
+                <code>24</code> 个通道值，<code>3072 / 24 = 128</code>，与实测的约
+                125 倍一致（略小是因为 121 帧按 4× 压缩后是 31 而不是 30.25）。音频的账最简单：<code>32000 / 40 = 800</code>，比图像和视频都小得多，所以音频 latent 通常不是显存瓶颈。
+              </p>
+            </div>
+            <p><strong>三个最常见的坑：</strong></p>
+            <ol>
+              <li>
+                <strong>维度顺序</strong>：NHWC 与 NCHW、<code>[B,T,C,H,W]</code> 与
+                <code>[B,C,T,H,W]</code>、<code>[B,2,S]</code> 与
+                <code>[B,S,2]</code> 都不是同一个张量。三次转置看起来无害，但放错位置不会报错，只会让模型学到垃圾。
+              </li>
+              <li>
+                <strong>值域与 dtype</strong>：<code>0–255</code> 的 uint8
+                直接进卷积会得到完全不同的激活；冻结的 VAE 和文本/图像编码器各自要求固定的归一化（扩散主干用
+                <code>[−1,1]</code>，CLIP 图像塔用 CLIP 自己的
+                mean/std，不能随便换）。fp16 还要留出数值范围，避免在
+                <code>×2−1</code> 之后再乘大系数导致溢出。
+              </li>
+              <li>
+                <strong>长度对齐</strong>：<code>T = fps × 秒数 + 1</code> 的 ±1
+                要写清；VAE 的时间压缩倍数（4× / 8×）通常要求 T
+                能被整除，靠 padding 或裁尾解决；音频 40 Hz latent 与视频 24 fps
+                又是两条不同的时间率，必须映射到同一参考系——这就是「原生音画同步」要解决的问题。
+              </li>
+            </ol>
             <div class="paper-summary">
               <h3>论文结论如何落到工程结构</h3>
               <p>
@@ -1997,12 +2243,12 @@ for n, p in model.named_parameters():
             </div>
             <h3>1. 从像素到 latent：为什么生成器不直接处理 RGB</h3>
             <p>
-              像素图通常写成 <code>x ∈ R^(B×3×H×W)</code>：B 是图片批次，3 是
+              像素图通常写成 <code>$x \in \mathbb{R}^{B\times 3\times H\times W}$</code>：B 是图片批次，3 是
               RGB 通道，H/W 是高宽。VAE（Variational
               Autoencoder，变分自编码器）由 encoder 和 decoder 组成：encoder
-              把像素压成较小的 latent <code>z ∈ R^(B×C×H'×W')</code>，生成主干在
+              把像素压成较小的 latent <code>$z \in \mathbb{R}^{B\times C\times H'\times W'}$</code>，生成主干在
               z 上加噪和预测，最后 decoder 把干净 latent 还原为
-              RGB。<code>H'=H/f</code>、<code>W'=W/f</code>，f
+              RGB。<code>$H' = H/f$</code>、<code>$W' = W/f$</code>，f
               是空间压缩因子；它不是“把图片裁剪掉”，而是用通道特征保存压缩后的视觉信息。
             </p>
             <div class="arch-diagram">
@@ -2027,7 +2273,7 @@ for n, p in model.named_parameters():
                 网格输入生成主干、最后解码回像素”是通用接口。
               </figcaption>
             </div>
-            <h3>2. Patch、token 与 patchify：把二维网格变成序列</h3>
+            <h3 id="basics-patchify">2. Patch、token 与 patchify：把二维网格变成序列</h3>
             <p>
               <strong>Patch</strong> 是 latent 网格中的小方块；<strong
                 >patchify</strong
@@ -2036,7 +2282,7 @@ for n, p in model.named_parameters():
               是主干一次处理的向量，不等于语言 token。假设 latent 是
               <code>[B,C,H',W']</code>，每个 patch 的边长是 p，并且 H'/W' 能被 p
               整除：先把空间网格切成 <code>H'/p × W'/p</code> 个块，块数
-              <code>N=(H'/p)(W'/p)</code>；每块有 <code>C·p·p</code> 个数，再用
+              <code>$N = (H'/p)(W'/p)$</code>；每块有 <code>C·p·p</code> 个数，再用
               Linear 投影到 Transformer 宽度 D，得到 <code>[B,N,D]</code>。
             </p>
             <div class="arch-diagram">
@@ -2071,196 +2317,731 @@ for n, p in model.named_parameters():
                 token 的 D 仍可相同，但序列变长会增加激活和 attention 成本。
               </p>
             </div>
-            <h3>3. U-Net 到底是什么：同一张图在多个尺度上处理</h3>
             <p>
-              <strong>U-Net</strong>
-              不是“一层卷积”，而是一条带有跳跃连接的多尺度
-              encoder-decoder。输入是带噪 latent <code>x_t</code>，先经过 Down
-              blocks 逐步降低 H/W、增加通道和感受野；中间的 Mid block
-              在最低分辨率上处理更大的空间关系；Up blocks 再逐步恢复
-              H/W，并把对应 Down block 保存的 feature 通过
-              <strong>skip connection</strong>
-              拼接或相加回来。这样低分辨率路径负责全局布局，高分辨率 skip
-              feature 负责边缘、纹理和局部定位。
+              patchify 在代码里就是<strong>纯形状变换</strong>（切块、展平、线性投影），unpatchify
+              是它的逆过程：它们本身没有「生成能力」，生成能力在中间的 Transformer
+              block 里。下面这张图把「网格 → 序列 → 网格」的每一档张量形状写全，可以当成 DiT
+              类主干出入口的对照表。
             </p>
-            <div class="arch-diagram">
-              <div class="arch-title">
-                U-Net 的一轮 forward：保存什么，在哪里合并
+            <div class="gn-frame">
+              <div class="gn-frame-head">
+                <div>
+                  <strong>patchify → 主干 → unpatchify 的完整张量流</strong>
+                  <small
+                    >虚线框内是从 latent 网格到 velocity 网格的完整往返，中间标出
+                    2×2、1×2×2 打包后的每一档形状。</small
+                  >
+                </div>
+                <span class="gn-badge">虚线框内＝一个完整结构</span>
               </div>
-              <div class="flow stack">
-                <div class="node input">
-                  输入 x_t<br />[B,C,H,W] + timestep t + text context
-                </div>
-                <b class="arrow">↓</b>
-                <div class="node">
-                  Down 1<br />ResNet / attention<br />保存 skip s1<br />→
-                  [B,C1,H/2,W/2]
-                </div>
-                <b class="arrow">↓</b>
-                <div class="node alt">
-                  Down 2<br />更低分辨率、更大感受野<br />保存 skip s2
-                </div>
-                <b class="arrow">↓</b>
-                <div class="node alt">
-                  Mid<br />ResNet + self/cross-attention<br />全局 latent 表征
-                </div>
-                <b class="arrow">↓</b>
-                <div class="node">Up 2<br />上采样 + 与 s2 合并</div>
-                <b class="arrow">↓</b>
-                <div class="node">Up 1<br />上采样 + 与 s1 合并</div>
-                <b class="arrow">↓</b>
-                <div class="node output">输出 eps 或 v<br />[B,C,H,W]</div>
-              </div>
-              <figcaption>
-                U-Net 的 skip 不是额外输入图片；它是本次 forward 的 Down
-                路径中保存的中间 feature，并在对应 Up stage 合并。
-              </figcaption>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>阶段</th>
-                    <th>输入</th>
-                    <th>输出</th>
-                    <th>主要作用</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td>Down block</td>
-                    <td>feature [B,C,H,W]、t、text</td>
-                    <td>更小 H/W 的 feature + skip</td>
-                    <td>扩大感受野，逐级提取局部到全局结构。</td>
-                  </tr>
-                  <tr>
-                    <td>Mid block</td>
-                    <td>最低分辨率 feature、t、text</td>
-                    <td>同尺度 feature</td>
-                    <td>在较小网格上混合远距离空间关系。</td>
-                  </tr>
-                  <tr>
-                    <td>Up block</td>
-                    <td>上一层 feature + 对应 skip、t、text</td>
-                    <td>更大 H/W 的 feature</td>
-                    <td>恢复空间细节，并把高分辨率定位信息接回来。</td>
-                  </tr>
-                  <tr>
-                    <td>Output head</td>
-                    <td>最后的 feature</td>
-                    <td>eps 或 v，与 x_t 同形状</td>
-                    <td>预测当前噪声/速度目标，交给 scheduler 更新 latent。</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <h3>4. DiT 到底是什么：不是一个神秘模型名</h3>
-            <p>
-              <strong>DiT</strong> 是 Diffusion Transformer 的缩写，意思是“用
-              Transformer 作为扩散/流生成的主干”。它不是 VAE，也不是
-              scheduler：VAE 负责像素↔latent，DiT 负责在带噪 latent
-              上预测更新，scheduler/solver 负责根据预测值推进时间步。图像 latent
-              被 patchify 成 token 后，DiT block
-              通常包含归一化、attention、条件调制、MLP 和残差连接；MLP
-              的“升维—非线性—降维”逻辑与上一部 LLM 的 MLP
-              相同，但具体激活和条件注入可能不同。
-            </p>
-            <div class="arch-diagram">
-              <div class="arch-title">一个 DiT block 的通用输入输出</div>
-              <div class="flow wide">
-                <div class="node">图像 tokens<br />[B,N,D]</div>
-                <b class="arrow">→</b>
-                <div class="node alt">Norm / AdaLN<br />时间条件调制</div>
-                <b class="arrow">→</b>
-                <div class="node">
-                  Self / Joint Attention<br />Q,K,V → context [B,N,D]
-                </div>
-                <b class="arrow">→ 残差</b>
-                <div class="node alt">Norm → MLP<br />[B,N,D]→[B,N,D]</div>
-                <b class="arrow">→ 残差</b>
-                <div class="node output">下一 block<br />[B,N,D]</div>
-              </div>
-              <figcaption>
-                图 IMG-03 · DiT 的内部输出通常保持
-                [B,N,D]，最后才用输出头变回每个 latent patch 的数值。
-              </figcaption>
-            </div>
-            <h3>5. 噪声、DDPM、scheduler 与 solver：谁在每一步做什么</h3>
-            <p>
-              训练时，先把干净 latent <code>z₀</code> 和随机噪声
-              <code>ε</code> 按时间 <code>t</code> 混合成 <code>z_t</code>；DDPM
-              的前向过程定义“噪声如何逐步加到数据上”，U-Net/DiT 学的是从
-              <code>z_t</code> 预测 <code>ε</code>、<code>v</code>
-              或干净样本。推理时没有真实图片可供加噪，而是从纯噪声
-              <code>z_T</code> 开始：每一步把当前 <code>z_t</code>、同一个
-              prompt 条件和当前 <code>t</code> 送进主干，主干输出预测，scheduler
-              再按 beta/alpha/sigma 规则计算下一状态 <code>z_{t-1}</code>。因此
-              scheduler 不是神经网络；它是保存时间表并执行更新公式的数值组件。
-            </p>
-            <div class="panel accent">
-              <h4>训练时的加噪公式</h4>
-              <p>
-                常见 DDPM 前向过程可以写成
-                <code>z_t = √(ᾱ_t) z₀ + √(1-ᾱ_t) ε</code>，其中
-                <code>ε ~ N(0,I)</code>，<code>ᾱ_t</code> 由 beta schedule
-                累积得到。模型拿到的是 <code>z_t</code> 和
-                t，监督目标则由参数化决定：epsilon-prediction 预测
-                ε，v-prediction 预测速度变量 v，不能把一个模型的 target
-                直接套给另一个 scheduler。
+              <pre class="mermaid-lite" data-ml-label="patchify 完整数据流">
+flowchart TD
+  z["latent [B,C,H,W]<br/>图像 C=4 或 16；视频 [B,C,T,H,W]"]:::in --> pack["按 p×p 切块并展平<br/>每块 C·p² 个数"]:::core
+  pack --> proj["Linear(C·p² → D)<br/>[B,N,D]，N=(H/p)(W/p)"]:::latent
+  proj --> blocks["Transformer block ×L<br/>（DiT / MMDiT / 单流）"]:::attn
+  blocks --> out["Linear(D → C·p²)<br/>[B,N,C·p²]"]:::core
+  out --> unpack["unpatchify：按原坐标拼回网格<br/>velocity [B,C,H,W]"]:::out
+              </pre>
+              <p class="gn-note">
+                <b>三个实际数字帮你对上号：</b>SD3.5-large 的 latent 是 16 通道、patch
+                2×2，所以每个 token 装 <code>16×2×2 = 64</code> 个数、<code>128×128</code> latent
+                得到 <code>4096</code> 个 token；Qwen-Image 也是 16 通道 2×2
+                打包成 64 维（pipeline 里叫 <code>pack</code>）；H3 的视觉 latent
+                是 24 通道、按 <code>1×2×2</code> 打包，所以每个 token 96
+                个数，进主干前有效空间下采样变成 32×。视频的 patch 多一条时间轴，叫
+                <strong>tubelet</strong>（例如 <code>1×2×2</code> 或 <code>2×2×2</code>）。
               </p>
             </div>
+            <h3 id="basics-resample">3. 上下采样与压缩率：只改形状，不改条件</h3>
+            <p>
+              U-Net 的多尺度、VAE 的压缩都靠这几个层。它们的共同点是<strong
+                >只负责把 H/W（或时间轴、采样率）变大变小，不负责注入文本条件</strong
+              >——把「条件注入」和「尺寸变换」混为一谈，是读架构图时最常见的误判：条件只影响数值，步长只影响形状。
+            </p>
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>名称</th>
-                    <th>它是什么</th>
-                    <th>输入</th>
-                    <th>输出</th>
+                    <th>层</th>
+                    <th>作用于哪一轴</th>
+                    <th>怎么算</th>
+                    <th>用在哪</th>
                   </tr>
                 </thead>
                 <tbody>
                   <tr>
-                    <td>DDPM</td>
-                    <td>
-                      一类扩散训练/采样框架，规定前向加噪与反向去噪的概率过程。
-                    </td>
-                    <td>干净 z₀、噪声 ε、时间 t</td>
-                    <td>训练样本 z_t 与对应 target</td>
+                    <td><code>Downsample2D</code></td>
+                    <td>空间 H、W</td>
+                    <td>3×3 卷积，stride=2（先 padding）</td>
+                    <td>U-Net 的每个 down block 末尾（最后一级不加）</td>
                   </tr>
                   <tr>
-                    <td>U-Net / DiT</td>
-                    <td>学习到的预测网络，不负责自己决定下一时间步。</td>
-                    <td>z_t、t、文本/图像条件</td>
-                    <td>eps、v 或其他 model output</td>
+                    <td><code>Upsample2D</code></td>
+                    <td>空间 H、W</td>
+                    <td>最近邻插值 + 3×3 卷积（可换成转置卷积）</td>
+                    <td>U-Net 的 up block 末尾、VAE 解码器</td>
                   </tr>
                   <tr>
-                    <td>scheduler</td>
-                    <td>
-                      扩散采样器，保存 timesteps、betas/sigmas，并实现离散的
-                      step 公式。
-                    </td>
-                    <td>model output、当前 t、z_t</td>
-                    <td>下一 latent z_{t-1}</td>
+                    <td><code>CausalConv3d(stride=(2,1,1))</code></td>
+                    <td>时间 T</td>
+                    <td>时间维左侧补零 + 时间步长 2</td>
+                    <td>视频 VAE 的时间下采样（H3 的 f16t4d24 里是 4×）</td>
                   </tr>
                   <tr>
-                    <td>solver</td>
-                    <td>
-                      更广义的数值积分器，常用于 flow/ODE 或经过改写的扩散采样。
-                    </td>
-                    <td>速度场/模型预测、时间区间、当前状态</td>
-                    <td>积分后的下一状态</td>
+                    <td><code>CausalConv1d(stride)</code></td>
+                    <td>音频采样轴 S</td>
+                    <td>波形上的一维因果卷积，总步长 = 采样率 ÷ latent 时间率</td>
+                    <td>音频 VAE（32 kHz → 40 Hz 对应 800×）</td>
                   </tr>
                   <tr>
-                    <td>CFG</td>
-                    <td>把无条件与有条件两次预测组合，增强 prompt 遵循。</td>
-                    <td>eps_uncond、eps_cond、guidance scale</td>
-                    <td>组合后的预测，再交给 scheduler</td>
+                    <td><code>PatchEmbed</code> / <code>tubelet</code></td>
+                    <td>空间（视频再加时间）</td>
+                    <td>按 patch 切块 + 线性投影成 token（形状变化见 §2 的图）</td>
+                    <td>DiT / SD3 / FLUX / Qwen-Image / H3 / 视频 DiT</td>
                   </tr>
                 </tbody>
               </table>
             </div>
-            <h3>6. 通用条件路径：文本、时间和参考图如何进入主干</h3>
+            <h3>4. 扩散模型到底是什么：前向加噪与反向去噪</h3>
+            <p>
+              一句话：<strong>训练时人为往干净 latent 上加噪，推理时从纯噪声出发，把同一个网络迭代调用很多次，一步一步把噪声减回去</strong>。网络在任何一步只学“给定当前带噪
+              latent z_t、时间 t 和条件 c，这一步里有多少噪声、该往哪个方向走”，它从来不是“输入 prompt 直接输出图片”的一步映射。一次生成要几十次前向，正是因为整条去噪轨迹被切成几十小步，每一步都由网络重新估计一次，而真正出图的最后一步也不是网络直接给的，而是 scheduler 按公式从当前 z_t 和网络预测算出来的。
+            </p>
+            <p>
+              前向过程（forward process）是<strong>固定的、没有可学参数的</strong>：它规定噪声怎么逐步加到数据上。逐步写法是每一步只加一点点高斯噪声，得到 <code>$q(z_t \mid z_{t-1}) = \mathcal{N}\!\left(\sqrt{1-\beta_t}\,z_{t-1},\ \beta_t I\right)$</code>
+            </p>
+            <p>
+              其中 β_t 是第 t 步注入的噪声方差，α_t = 1 − β_t 是这一步保留的信号比例，而累积量 <code>$\bar\alpha_t$</code> 是从第 1 步乘到第 t 步的结果：
+              <code>$\alpha_t = 1-\beta_t$</code>、<code>$\bar\alpha_t = \prod_{s=1}^{t}\alpha_s$</code>。β_t 随 t 增大（后几步加得更多），所以 <code>$\bar\alpha_t$</code> 是随 t 单调下降的曲线：t 很小时接近 1，t 接近 T 时接近 0。这条曲线就是后文反复出现的“调度”。
+            </p>
+            <p>
+              因为每步都是高斯，而高斯串联后仍是高斯，前向过程有<strong>闭式解</strong>：不必真的循环 t 次，也能直接写出第 t 步的分布 <code>$q(z_t \mid z_0) = \mathcal{N}\!\left(\sqrt{\bar\alpha_t}\,z_0,\ (1-\bar\alpha_t)I\right)$</code>
+            </p>
+            <p>
+              把它写成可直接采样的形式，就是全篇最有用的一条式子： <code>$z_t = \sqrt{\bar\alpha_t}\,z_0 + \sqrt{1-\bar\alpha_t}\,\epsilon,\ \epsilon \sim \mathcal{N}(0,I)$</code>。这条式子的含义是：<strong>“加噪 t 步”等价于一次乘法加一次加法</strong>。训练时随机抽一个时间点 t，用同一个 z_0、同一个 ε 一次性算出 z_t 即可，不需要真的迭代 t 次；这正是扩散模型能在随机时间点上做单步训练、而不是跑整条链的原因。这里的 z_0 通常不是像素，而是图像过 VAE 编码器得到的干净 latent，加噪发生在 latent 空间；解码回像素只发生在整条去噪链结束之后。</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>记号</th>
+                    <th>含义</th>
+                    <th>取值 / 典型值</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>z_0</code></td>
+                    <td>干净 latent，VAE 编码器输出，也是 x_0-prediction 的目标</td>
+                    <td>形状 <code>[B,C,h,w]</code>，值域约 [−1,1]</td>
+                  </tr>
+                  <tr>
+                    <td><code>ε</code></td>
+                    <td>人为采样的标准高斯噪声，训练时唯一随机的输入</td>
+                    <td><code>$\epsilon \sim \mathcal{N}(0,I)$</code></td>
+                  </tr>
+                  <tr>
+                    <td><code>β_t</code></td>
+                    <td>第 t 步的噪声方差，由 beta schedule 生成</td>
+                    <td>约 1e−4 到 2e−2，随 t 增大</td>
+                  </tr>
+                  <tr>
+                    <td><code>α_t</code></td>
+                    <td>单步信号保留系数，<code>$\alpha_t = 1-\beta_t$</code></td>
+                    <td>接近 1（如 0.999）</td>
+                  </tr>
+                  <tr>
+                    <td><code>$\bar\alpha_t$</code></td>
+                    <td>累积信号保留系数，训练调度的全部信息都在这一条曲线上</td>
+                    <td>t 小 → 约 1；t 大 → 约 0</td>
+                  </tr>
+                  <tr>
+                    <td><code>z_t</code></td>
+                    <td>第 t 步的带噪 latent，也是主干每一步的唯一视觉输入</td>
+                    <td>与 z_0 同形状</td>
+                  </tr>
+                  <tr>
+                    <td><code>σ_t</code></td>
+                    <td>常用简写：这一步的噪声系数 <code>$\sqrt{1-\bar\alpha_t}$</code></td>
+                    <td>t 小 → 约 0；t 大 → 约 1</td>
+                  </tr>
+                  <tr>
+                    <td><code>T</code></td>
+                    <td>训练用的离散总步数，决定 β 表长度</td>
+                    <td>常见 1000</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              反向过程（reverse process）是把上面这条链倒着走。它写作 <code>$p_\theta(z_{t-1} \mid z_t)$</code>，是一个条件高斯，但它的真实均值没有闭式解，只能让网络去逼近。推理时的循环是：从 <code>$z_T \sim \mathcal{N}(0,I)$</code> 出发，每一步把当前 z_t、时间 t 和条件 c 送进主干，拿到预测，由 scheduler 算出 z_{t−1}，重复到 t=0 得到 z_0，最后交 VAE 解码器变成像素。
+            </p>
+            <p>
+              网络输出和“往前推一步”的关系，在 ε-参数化下可以写全。网络预测 <code>$\epsilon_\theta$</code> 之后，这一步的<strong>目标均值</strong>由它和当前 z_t 直接换算： <code>$\mu_\theta(z_t,t) = \dfrac{1}{\sqrt{\alpha_t}}\left(z_t - \dfrac{\beta_t}{\sqrt{1-\bar\alpha_t}}\,\epsilon_\theta(z_t,t,c)\right)$</code>
+            </p>
+            <p>
+              然后按这个均值加回一点随机性，得到下一步：<code>$z_{t-1} = \mu_\theta(z_t,t) + \sigma_t\,\xi,\ \xi \sim \mathcal{N}(0,I)$</code>；最后一步（t=1）通常不再加噪声，直接取均值。三个量的分工因此非常清楚：<strong><code>$\epsilon_\theta$</code> 是网络唯一真正输出的东西</strong>（一个和 z_t 同形状的张量）；<strong><code>$\mu_\theta$</code> 不是网络输出</strong>，而是 scheduler 用 <code>$\epsilon_\theta$</code> 和 z_t 按上式算出来的这一小步的落脚点；<strong>σ_t 是这一步还剩多少随机性</strong>，DDPM 常取反向方差 <code>$\tilde\beta_t = \dfrac{1-\bar\alpha_{t-1}}{1-\bar\alpha_t}\,\beta_t$</code>（也可简化为 β_t），DDIM 一类确定性采样器则直接取 σ_t = 0。换句话说，同一份 <code>$\epsilon_\theta$</code>，配不同的 μ、σ 公式，就是不同的 sampler。
+            </p>
+            <p>
+              时间步是<strong>离散</strong>的：训练时 t 从 <code>$\{1,\dots,T\}$</code> 里采样，常见做法是均匀采样，也有按噪声水平加权（例如偏向中间段的对数正态或 logit-normal 采样）；T 常见 1000。推理时只用 K = 20–50 步，这个 K <strong>不等于</strong> T，也不是“把时间重新编号成 1 到 K”：scheduler 会从 0…T−1 这份训练时间表里挑出 K 个点放进 timesteps 数组，主干只在这 K 个点上被调用。把 1000 和 50 当成一回事，是“权重里明明写着 1000 步，为什么别人 20 步就出图”这类困惑的根源；两者分别是训练时间表的长度和推理被调用次数。
+            </p>
+            <h4>流匹配（flow matching / rectified flow）：同一件事的另一种参数化</h4>
+            <p>
+              流匹配把“加噪”换成“在干净样本和噪声之间走一条直线”。定义 <code>$z_t = (1-t)\,z_0 + t\,\epsilon$</code>，其中 <code>$t \in [0,1]$</code>：t=0 是干净 latent，t=1 是纯噪声，中间是线性插值。对 t 求导立刻得到这一步的“速度” <code>$v = \dfrac{dz_t}{dt} = \epsilon - z_0$</code>。于是主干的目标从“预测噪声”变成“预测速度场 v”，推理就是把常微分方程沿 t 从 1 积到 0。最朴素的积分器是欧拉法，一步就是 <code>$z \leftarrow z + \Delta t \cdot v_\theta(z,t)$</code></p>
+            <p>
+              其中 Δt 是这一步的负步长（从 t=1 往 t=0 走，Δt &lt; 0）。注意这里没有“另外加回随机噪声”这一项，所以流匹配采样天然是确定性的，随机性只来自起点 z_1 的采样。它和 DDPM 不是两套数学，而是<strong>同一件事的两种参数化</strong>：DDPM 的 <code>$\bar\alpha_t$</code> 与 σ 满足 <code>$\bar\alpha_t$</code> + (1−<code>$\bar\alpha_t$</code>) = 1，走的是 (α, σ) 平面上的一条四分之一圆；流匹配走的是同一条平面上的直线（所以叫 rectified）。用 log-SNR <code>$\lambda_t = \log\dfrac{\bar\alpha_t}{1-\bar\alpha_t}$</code> 看，两者都是“信号系数随噪声水平下降”的同一条曲线，只是把预测目标分别写成了噪声、干净样本或曲线切线方向；所谓 v-prediction 与 flow velocity 就是同一个切线方向在这两条路径上的两种写法。
+            </p>
+            <div class="tensor-example">
+              <b>具体数字：T = 1000、<code>$\bar\alpha_t$</code> 从约 1 衰减到约 0 到底是什么样</b>
+              <p>
+                取 SD 1.5 / SDXL 常用的 scaled_linear 调度（β 从 0.00085 到 0.012 共 1000 步），可以算出 <code>$\bar\alpha_t$</code>、信号系数 <code>$\sqrt{\bar\alpha_t}$</code>、噪声系数 <code>$\sqrt{1-\bar\alpha_t}$</code>：
+              </p>
+              <p>
+                t=1 时 <code>$\bar\alpha_t \approx 0.9992$</code>，信号系数 0.9996、噪声系数 0.029 → z_t 几乎是原图；t=250 时 <code>$\bar\alpha_t \approx 0.675$</code>，信号 0.822 对噪声 0.570；t=500 时 <code>$\bar\alpha_t \approx 0.278$</code>，信号 0.527 已被噪声 0.850 压过（SNR≈0.38）；t=750 时 <code>$\bar\alpha_t \approx 0.057$</code>，信号 0.238 对噪声 0.971；t=1000 时 <code>$\bar\alpha_t \approx 0.0047$</code>，信号系数只剩 0.068、噪声系数 0.998，z_t 已经接近纯噪声。
+              </p>
+              <p>
+                这组数字解释了训练时的直觉：<strong>小 t 的样本几乎就是原图，网络要学的是“几乎看不见的那层噪声”；大 t 的样本几乎是纯噪声，网络要学的是“从一片雪花里看回大致轮廓”</strong>。而 20 步推理等于把这条 1000 点的曲线只用 20 个采样点走完，每个点上的噪声水平由 scheduler 的 sigma 表给出——这也正是第 5 节要讲的“推理侧时间表”。
+              </p>
+            </div>
+
+            <h3>5. 训练目标：ε、v、x₀ 与 velocity</h3>
+            <p>
+              不管参数化怎么换，训练目标都是同一个形状：让网络在随机时间点上的预测去逼近一个由 z_0 和 ε 构造出来的 target，用均方误差回传梯度。 <code>$L = \mathbb{E}_{z_0,\epsilon,t}\left[\,w(t)\,\lVert f_\theta(z_t,t,c) - \text{target} \rVert^2\,\right]$</code>。其中 <code>$f_\theta$</code> 是主干（U-Net / DiT），c 是条件（文本 embedding，以及参考图、mask 之类的额外条件），t 是随机采到的时间点，<code>$w(t)$</code> 是时间权重。最常见的取法是 <code>$w(t)=1$</code>，也就是每个噪声水平的样本等权；也有按噪声水平加权的做法，例如 Min-SNR 权重 <code>$w(t)=\min(\text{SNR}(t),\ \gamma)$</code>（γ 常取 5 左右），它的动机是：纯 ε-预测的损失在高噪声端（<code>$\bar\alpha_t$</code> 很小）损失数值很小但梯度方向很噪，低噪声端损失数值很大，加权后两端的有效梯度更接近平衡。微调脚本里如果出现 “min_snr_gamma”，说的就是这个 w(t)。</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>参数化</th>
+                    <th>target（网络直接回归的东西）</th>
+                    <th>定义式</th>
+                    <th>典型使用者</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>ε-prediction</td>
+                    <td>这一步加进去的噪声 ε</td>
+                    <td>target = ε</td>
+                    <td>SD 1.5、SD 2.0-base、SDXL 主流权重</td>
+                  </tr>
+                  <tr>
+                    <td>x_0-prediction（clean）</td>
+                    <td>干净 latent z_0</td>
+                    <td>target = z_0</td>
+                    <td>部分编辑 / 超分类管线，以及一些把干净 latent 当主输出的实现</td>
+                  </tr>
+                  <tr>
+                    <td>v-prediction</td>
+                    <td>信号与噪声的混合速度 v</td>
+                    <td><code>$v = \sqrt{\bar\alpha_t}\,\epsilon - \sqrt{1-\bar\alpha_t}\,z_0$</code></td>
+                    <td>SD 2.1-768 一类权重（<code>prediction_type: v_prediction</code>）</td>
+                  </tr>
+                  <tr>
+                    <td>velocity（flow matching）</td>
+                    <td>直线路径的切线方向</td>
+                    <td><code>$v = \epsilon - z_0$</code>，路径为 <code>$z_t=(1-t)z_0+t\epsilon$</code></td>
+                    <td>SD3 / SD3.5、FLUX、Qwen-Image、Wan 等 flow 主干</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              v 的定义有两种整体差一个符号的写法：上面用的是 <code>$v = \sqrt{\bar\alpha_t}\,\epsilon - \sqrt{1-\bar\alpha_t}\,z_0$</code>，也有实现写成 <code>$\sqrt{1-\bar\alpha_t}\,z_0 - \sqrt{\bar\alpha_t}\,\epsilon$</code>。train 与 inference 只要<strong>在同一个代码库里自洽</strong>就不会错，但把别人的公式抄进自己的 sampler 时，很容易出现“每步方向反了”的情况；所以判断符号不要靠记忆，看代码里的 target 构造和 <code>step</code> 里用的是 <code>+v</code> 还是 <code>−v</code>。流匹配侧的符号也有同样问题：有的实现让 t=1 表示纯噪声，有的反过来让 t=0 表示纯噪声，此时 <code>$v = z_0 - \epsilon$</code> 才是对的。
+            </p>
+            <p>
+              四种参数化之间可以随时互相换算，只要有 z_t 和其中任意一个预测量。记 <code>$a=\sqrt{\bar\alpha_t}$</code>、<code>$b=\sqrt{1-\bar\alpha_t}$</code>（即 a² + b² = 1）：
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>已知</th>
+                    <th>求 <code>$\hat\epsilon$</code>（噪声）</th>
+                    <th>求 <code>$\hat z_0$</code>（干净 latent）</th>
+                    <th>求 <code>$\hat v$</code>（速度）</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>ε-prediction：<code>$\hat\epsilon = f_\theta$</code></td>
+                    <td>—</td>
+                    <td><code>$\hat z_0 = \dfrac{z_t - \sqrt{1-\bar\alpha_t}\,\hat\epsilon}{\sqrt{\bar\alpha_t}}$</code></td>
+                    <td><code>$\hat v = \dfrac{\hat\epsilon - \sqrt{1-\bar\alpha_t}\,z_t}{\sqrt{\bar\alpha_t}}$</code></td>
+                  </tr>
+                  <tr>
+                    <td>x_0-prediction：<code>$\hat z_0 = f_\theta$</code></td>
+                    <td><code>$\hat\epsilon = \dfrac{z_t - \sqrt{\bar\alpha_t}\,\hat z_0}{\sqrt{1-\bar\alpha_t}}$</code></td>
+                    <td>—</td>
+                    <td><code>$\hat v = \dfrac{\sqrt{\bar\alpha_t}\,z_t - \hat z_0}{\sqrt{1-\bar\alpha_t}}$</code></td>
+                  </tr>
+                  <tr>
+                    <td>v-prediction：<code>$\hat v = f_\theta$</code></td>
+                    <td><code>$\hat\epsilon = \sqrt{1-\bar\alpha_t}\,z_t + \sqrt{\bar\alpha_t}\,\hat v$</code></td>
+                    <td><code>$\hat z_0 = \sqrt{\bar\alpha_t}\,z_t - \sqrt{1-\bar\alpha_t}\,\hat v$</code></td>
+                    <td>—</td>
+                  </tr>
+                  <tr>
+                    <td>flow velocity：<code>$\hat v = f_\theta$</code>（<code>$t\in[0,1]$</code>）</td>
+                    <td><code>$\hat\epsilon = z_t + (1-t)\,\hat v$</code></td>
+                    <td><code>$\hat z_0 = z_t - t\,\hat v$</code></td>
+                    <td>—</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              用公式时记住两条边界：第一，<strong>除以 <code>$\sqrt{\bar\alpha_t}$</code> 或除以 <code>$\sqrt{1-\bar\alpha_t}$</code> 在两端都会放大误差</strong>，所以换算出来的 <code>$\hat z_0$</code> 在高噪声端会很不可靠（这也是 sampler 在高噪声端只走一小步的原因）；第二，<code>$\hat z_0$</code> 换算出来可能超出 [−1,1]，是否 clamp 到合法值域取决于实现，不要想当然。
+            </p>
+            <p>
+              为什么还要有 v-prediction？把三种参数化的<strong>误差放大关系</strong>写出来就清楚了。记 <code>$e_\epsilon$</code> = <code>$\hat\epsilon$</code> − ε、e_0 = <code>$\hat z_0$</code> − z_0，由 z_t = a z_0 + b ε 可以直接推出 e_0 = −(b/a) <code>$e_\epsilon$</code> = −<code>$e_\epsilon$</code> / √SNR，以及反过来 <code>$e_\epsilon$</code> = −(a/b) e_0。也就是说：ε-prediction 的 ε 误差在还原成干净 latent 时被 <code>$\sigma_t/\sqrt{\bar\alpha_t}$</code> 放大，噪声越大放大越狠；x_0-prediction 的 z_0 误差在还原成 <code>$\hat\epsilon$</code> 时被 <code>$\sqrt{\bar\alpha_t}/\sigma_t$</code> 放大，噪声越小放大越狠。两端各自崩一边。而 v 是一个把两者混在一起的量，误差在两端的放大系数都小于 1：<code>$e_0 = -\sigma_t\,e_v$</code>、<code>$e_\epsilon = \sqrt{\bar\alpha_t}\,e_v$</code>（flow 侧同理，<code>$e_0 = -t\,e_v$</code>、<code>$e_\epsilon = (1-t)\,e_v$</code>）。
+            </p>
+            <div class="tensor-example">
+              <b>具体数字：同一个 0.1 的预测误差，在不同参数化下变成多大的 latent 误差</b>
+              <p>
+                仍用 scaled_linear、T=1000。在 t=900（<code>$\bar\alpha_t \approx 0.0143$</code>、a≈0.120、b≈0.993）处，取 <code>$\hat\epsilon$</code> 的误差为 0.1：ε-prediction 把它还原成 <code>$\hat z_0$</code> 时放大 <code>$b/a \approx 8.3$</code> 倍，干净 latent 上就是 0.83 的误差；换成 v-prediction，同样 0.1 的 <code>$\hat v$</code> 误差只对应 <code>$b \approx 0.993$</code> 倍的 z_0 误差，约 0.099。反过来在 t=100（<code>$\bar\alpha_t \approx 0.895$</code>、a≈0.946、b≈0.323）处，x_0-prediction 的 0.1 误差会被 <code>$a/b \approx 2.9$</code> 倍放大成 0.29 的噪声误差，而 v-prediction 只放大 <code>$a \approx 0.946$</code> 倍。
+              </p>
+              <p>
+                所以 v-prediction 的优势不是“更准”，而是<strong>误差在高噪声端和低噪声端都保持同一量级</strong>；少步采样（起点就是高噪声）和蒸馏（要一步跨很远）最怕的正是高噪声端误差爆掉，这就是 v 在少步与蒸馏场景里常见的原因。
+              </p>
+            </div>
+            <p>
+              实际模型用哪种参数化，可以直接从权重名判断，不需要猜：SD 1.5、SD 2.0-base、SDXL 主流权重是 <code>epsilon</code>；SD 2.1-768 是 <code>v_prediction</code>；SD3 / SD3.5、FLUX、Qwen-Image、Wan 这类 flow 主干用的是 velocity（它们的 scheduler 是 <code>FlowMatchEulerDiscreteScheduler</code> 一类，config 里没有 <code>prediction_type</code>，因为 flow 侧参数化基本固定为速度）。
+            </p>
+            <p>
+              <strong>prediction_type 必须和 sampler 匹配</strong>：sampler 拿到的永远是网络输出的那个张量，它按 config 里声明的参数化去解释。声明成 ε 而权重实际在预测 v，每一步的方向和幅度都不对，结果是画面糊成一团、过曝、或者几十步下来噪声根本没被减掉；反过来同理。权威来源只有一个——checkpoint 的 <code>scheduler_config.prediction_type</code>（Diffusers 里就是 <code>pipe.scheduler.config.prediction_type</code>），换 sampler、换 LoRA、换 pipeline 都要以它为准，而不是以模型名或别人的工作流截图为准。上游文件缺失时，用 <code>model_index.json</code> 找到 scheduler 目录，再读它的 <code>scheduler_config.json</code>。
+            </p>
+            <p>
+              最后一条实践纪律：<strong>微调时沿用基座的目标与参数化，不要自己换</strong>。基座是 ε-预测就继续用 ε-预测做 loss，基座是 flow velocity 就继续回归 ε − z_0。换 target 等于让权重去学一个它从未被训练过的映射，LoRA 那点容量补不回来，而且微调出来的权重会和基座的推理链路不匹配。同理，训练脚本里的 target 构造、噪声调度、时间采样方式都应先和基座对齐，再谈改哪里。
+            </p>
+
+            <h3>6. 噪声调度与 sigma 表：每一步的噪声水平从哪来</h3>
+            <p>
+              噪声调度的本质是<strong>一条曲线</strong>：<code>$\bar\alpha_t$</code> 随 t 怎么从 1 掉到 0。把它换成更直观的信噪比，就是 <code>$\text{SNR}(t) = \dfrac{\bar\alpha_t}{1-\bar\alpha_t}$</code>。SNR 从 t 小时的很大（几千）降到 t 大时的接近 0。用对数形式 <code>$\lambda_t = \log \text{SNR}(t)$</code> 看，整条调度就是一条从左上到右下的单调曲线：<strong>“哪一段更陡”决定了训练和推理把步数花在哪里</strong>——陡的段落每走一步噪声水平变化大，缓的段落走一步变化小。所谓“换调度”，换的就是这条曲线的形状，而不是换网络。</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>beta schedule</th>
+                    <th>写法 / 公式</th>
+                    <th>曲线特征</th>
+                    <th>谁在用</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>linear</td>
+                    <td>β_t 从 β_start 到 β_end 等间隔，常见 0.0001 → 0.02</td>
+                    <td>尾部掉得太快：t 过 700 以后 <code>$\bar\alpha_t$</code> 已经接近 0，最后两三百步几乎全是纯噪声，贡献的有效去噪步很少</td>
+                    <td>最早期的 DDPM 实现</td>
+                  </tr>
+                  <tr>
+                    <td>scaled_linear</td>
+                    <td>在 √β 上等间隔：<code>$\beta_t = \left(\text{linspace}(\sqrt{\beta_{\text{start}}},\sqrt{\beta_{\text{end}}},T)\right)^2$</code>，常见 0.00085 → 0.012</td>
+                    <td>起点更小、整体更平缓；<code>$\bar\alpha_t$</code> 在中间段下降快，两端慢，步数分布比 linear 均匀</td>
+                    <td>SD 1.5、SD 2.x、SDXL（<code>beta_schedule: "scaled_linear"</code>）</td>
+                  </tr>
+                  <tr>
+                    <td>cosine</td>
+                    <td><code>$\bar\alpha_t = \dfrac{f(t)}{f(0)}$</code>，<code>$f(t)=\cos^2\!\left(\dfrac{t/T+s}{1+s}\cdot\dfrac{\pi}{2}\right)$</code>，s 常取 0.008</td>
+                    <td>两端变化慢、中间变化快，避免 linear 尾部“信息瞬间归零”；由 β_t = 1 − <code>$\bar\alpha_t$</code>/<code>$\bar\alpha_{t-1}$</code> 反推时通常 clip 到 0.999</td>
+                    <td>改进型 DDPM、不少研究实现（Diffusers 里叫 <code>squaredcos_cap_v2</code>）</td>
+                  </tr>
+                  <tr>
+                    <td>sigmoid</td>
+                    <td>在 log-SNR 上用一条 sigmoid 曲线分配噪声水平</td>
+                    <td>中间段被拉平，信息量在两端分布更均匀，配合少步采样器时步长分配更稳</td>
+                    <td>部分研究实现与视频 / 音频主干</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              cosine 与 sigmoid 的动机相同：linear 调度在 t 很大时 β 累积得太快，<code>$\bar\alpha_t$</code> 早早归零，于是<strong>大量训练步浪费在“已经全是噪声、几乎学不到东西”的区域</strong>；把曲线改成两端慢中间快，等于把同样的 T 步更均匀地铺在 SNR 轴上。反过来，训练时如果按噪声水平加权采样 t（logit-normal 之类），效果和改调度曲线类似：都是把有效样本挪到中间段。
+            </p>
+            <p>
+              到了推理侧，决定每一步噪声水平的东西不再是 β_t，而是 scheduler 里那份<strong>sigma 表 / timesteps 数组</strong>。它的任务是把训练用的 T 步压缩成推理用的 K 步（20–50），并给出这 K 个点的具体噪声水平。控制这份数组的常见字段是 <code>timestep_spacing</code>：
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>spacing</th>
+                    <th>怎么取点</th>
+                    <th>直观效果</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>leading</code></td>
+                    <td>从 t=0 这一头按固定间隔往上取 K 个点（间隔约 T/K），最高点落在 T−T/K 附近，不到 T−1</td>
+                    <td>起点噪声略低于训练最噪的那几档，收尾干净；少步时会显得“图偏灰、对比度弱”</td>
+                  </tr>
+                  <tr>
+                    <td><code>trailing</code></td>
+                    <td>从 t=T−1 这一头按固定间隔往下取 K 个点，第一步正好是最大噪声，最后一格落在 T/K 附近再收到 0</td>
+                    <td>起点噪声给足，构图先定下来；SDXL 一类 pipeline 常把它作为默认，步数少时比 leading 更稳</td>
+                  </tr>
+                  <tr>
+                    <td><code>linspace</code></td>
+                    <td>在 0…T−1 上直接等分，头尾都落在端点上</td>
+                    <td>最“平均”的取法，步数很少时会牺牲高噪声端的精度</td>
+                  </tr>
+                  <tr>
+                    <td><code>use_karras_sigmas</code></td>
+                    <td>不用等间隔，而是让 sigma 沿一条幂曲线 <code>$\sigma_i = \left(\sigma_{\max}^{1/\rho} + \dfrac{i}{K-1}\left(\sigma_{\min}^{1/\rho}-\sigma_{\max}^{1/\rho}\right)\right)^{\rho}$</code>（ρ 常取 7）分布</td>
+                    <td>Karras 曲线：<strong>大 sigma 段用少数几步跨过去，把大部分步数花在低噪声端</strong>；细节是在低噪声区被定下来的，所以它特别适合 Euler / DPM-Solver 这类低噪声端敏感的解算器</td>
+                  </tr>
+                  <tr>
+                    <td><code>timestep_type</code></td>
+                    <td>在“连续 sigma”和“离散 timestep”之间切换（有的实现叫 <code>use_flow_sigmas</code> / <code>timestep_type: "continuous"</code>）</td>
+                    <td>只影响是否把时间取整；取整会改变每一步的实际噪声水平，复现别人的图时这也会造成差异</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              flow matching 侧的表更简单：常见约定就是 <code>$\sigma = t$</code>，sigma 从 1 线性走到 0，再按 <code>shift</code> 做一次重排 <code>$\sigma' = \dfrac{\text{shift}\cdot\sigma}{1+(\text{shift}-1)\sigma}$</code>
+            </p>
+            <p>
+              这个映射把 σ 整体往上抬：shift &gt; 1 时，同一个 σ 被映射到更大的值，于是<strong>分给高噪声区间的步数变多、分给极低噪声端的步数变少</strong>。以 K=20、shift=3 为例，重排后 σ &gt; 0.5 的点有 16 个（不 shift 时正好 10 个），而 σ &lt; 0.2 的点只剩 1 个（不 shift 时 3 个）。这和“高分辨率需要更大 shift”的经验是一致的：像素越多，同样大小的 σ 对画面的实际破坏越弱（噪声在更多像素上被平均掉），所以要把更多步留在高噪声区，先把整体构图和大色块定下来，再用少数几步收拾细节。FLUX、Qwen-Image 这类主干会把 shift 设成<strong>动态值</strong>：由 latent 序列长度算出 mu（序列越长 shift 越大），因此同一条 pipeline 在 512² 和 2048² 上自动用不同的时间表；视频侧因为帧数多、序列更长，shift 通常还要再调大一些。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>调度 / 采样侧</th>
+                    <th>典型模型</th>
+                    <th>训练步数 T</th>
+                    <th>推理步数 K</th>
+                    <th>备注</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>scaled_linear + leading</td>
+                    <td>SD 1.5</td>
+                    <td>1000</td>
+                    <td>20–30</td>
+                    <td>经典 DDIM / Euler 组合；<code>prediction_type: epsilon</code></td>
+                  </tr>
+                  <tr>
+                    <td>scaled_linear + trailing</td>
+                    <td>SDXL / SDXL-Turbo 之外的常规检查点</td>
+                    <td>1000</td>
+                    <td>25–30</td>
+                    <td>trailing 让第一步落在最大噪声；turbo / LCM 类蒸馏权重是 1–8 步</td>
+                  </tr>
+                  <tr>
+                    <td>flow + shift（视顺序长度）</td>
+                    <td>SD3 / SD3.5</td>
+                    <td>标称 1000 的连续时间</td>
+                    <td>约 20–30</td>
+                    <td>速度参数化；<code>FlowMatchEulerDiscreteScheduler</code>，使用动态 shift 时按 token 数算 mu</td>
+                  </tr>
+                  <tr>
+                    <td>flow + shift（dev 与 schnell 不同）</td>
+                    <td>FLUX.1</td>
+                    <td>标称 1000 的连续时间</td>
+                    <td>dev 约 20–30；schnell 1–4</td>
+                    <td>dev 带 <code>guidance_embed</code>（引导蒸馏），schnell 是时间步蒸馏的少步权重</td>
+                  </tr>
+                  <tr>
+                    <td>flow + shift</td>
+                    <td>Qwen-Image</td>
+                    <td>标称 1000 的连续时间</td>
+                    <td>20–50</td>
+                    <td>MSRoPE 让 token 序列很长，shift 需要跟着序列长度走</td>
+                  </tr>
+                  <tr>
+                    <td>flow 或 DDIM</td>
+                    <td>Wan / CogVideoX 一类视频主干</td>
+                    <td>标称 1000 的连续时间</td>
+                    <td>约 25–50</td>
+                    <td>帧数越多序列越长，shift 或步数都要一起上调</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              这张表里的数字都是<strong>该模型常见工作流里的起点</strong>，不是“官方唯一值”。决定实际行为的始终是 checkpoint 自带的那份配置：<code>scheduler_config.json</code> 里的 <code>num_train_timesteps</code>（T 到底是多少）、<code>beta_schedule</code>（曲线形状）、<code>prediction_type</code>（参数化），加上推理时由 pipeline 默认参数决定的 <code>timestep_spacing</code>、<code>use_karras_sigmas</code>、<code>shift</code>。同一份权重配不同的推理时间表，出图质量和风格就会变，所以“这个模型应该跑几步”永远应该先去读它的 pipeline 默认值，而不是背一个数字。
+            </p>
+            <div class="tensor-example">
+              <b>具体数字：20 步时 Karras 表与等间隔表差别有多大</b>
+              <p>
+                仍以 K=20、σ 从 80 降到 0.002 的传统扩散约定为例。等间隔取点时，σ &lt; 1 的点只有 1 个——也就是说 20 步里有 19 步都花在“噪声极大、只能定大色块”的区域，真正决定细节的低噪声段只有一步。换成 Karras 曲线（ρ=7）后，σ &lt; 1 的点变成 9 个，接近一半的步数落在低噪声端。
+              </p>
+              <p>
+                反过来，flow 侧的 shift 做的正好是相反方向的事：shift 从 1 调到 3，σ &gt; 0.5 的步数从 10 个变成 16 个。两类时间表不是谁更“对”，而是<strong>把有限步数分给哪一端</strong>的取舍：Karras 认为细节值钱，shift 认为高分辨率下的大结构更值钱。理解了这一点，就能判断别人的工作流为什么在某个 sampler 上写死了一个奇怪的 sigma 配置。
+              </p>
+            </div>
+
+            <h3>7. sampler、scheduler 与 solver：谁在每一步做什么</h3>
+            <p>
+              这三个词在文档和代码里经常混用，先把它们拆开：
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>词</th>
+                    <th>指什么</th>
+                    <th>决定什么</th>
+                    <th>出现在哪</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>noise scheduler（训练侧）</td>
+                    <td>加噪曲线本身：β_t、α_t、<code>$\bar\alpha_t$</code> 和 sigma 表</td>
+                    <td>每个时间点的噪声水平；训练时怎么造 z_t</td>
+                    <td>训练脚本、checkpoint 的 <code>scheduler_config</code></td>
+                  </tr>
+                  <tr>
+                    <td>sampler / solver（推理侧）</td>
+                    <td>从 z_t 推到 z_{t−1} 的那条数值更新公式（DDIM、Euler、DPM-Solver++、Heun…）</td>
+                    <td>每一步走多远、走几步、要不要注入随机噪声</td>
+                    <td>推理 pipeline 的 sampler 名字、ComfyUI 的采样器下拉框</td>
+                  </tr>
+                  <tr>
+                    <td>Diffusers 的 <code>SchedulerMixin</code> 对象</td>
+                    <td>一个类同时装了 sigma 表和更新公式，既是训练侧的表，也是推理侧的 solver</td>
+                    <td>上面两件事都由它提供，所以文档里常把 scheduler 和 sampler 当同义词</td>
+                    <td><code>pipe.scheduler</code>、<code>DDIMScheduler</code>、<code>EulerDiscreteScheduler</code>、<code>FlowMatchEulerDiscreteScheduler</code></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              读代码时这样区分最省事：<strong>看它是被 <code>set_timesteps()</code> 产生时间表，还是被 <code>step()</code> 用来推下一步</strong>。前者是“表”，后者是“解算器”；Diffusers 里两者在同一个对象上，所以 <code>scheduler.step(model_output, t, z_t)</code> 会同时用到表和解算器。下面统一用 Karras / EDM 的 σ 约定写更新式：在那里 <code>$z_t = z_0 + \sigma_t\,\epsilon$</code>，σ 从大到小走到 0；它和 DDPM 的 <code>$\bar\alpha_t$</code> 可以互换，<code>$\sigma_t = \sqrt{(1-\bar\alpha_t)/\bar\alpha_t}$</code>，而 <code>$\hat z_0$</code> 与 <code>$\hat\epsilon$</code> 的换算关系不变。
+            </p>
+            <p>
+              <strong>DDIM（确定性，η = 0）。</strong>它先用模型输出算出 <code>$\hat z_0$</code> 和 <code>$\hat\epsilon$</code>，再直接跳到目标噪声水平： <code>$z_{t-1} = \sqrt{\bar\alpha_{t-1}}\,\hat z_0 + \sqrt{1-\bar\alpha_{t-1}}\,\hat\epsilon$</code>。这条式子没有任何随机项，所以同一组 seed 和 prompt 下结果可复现。要注入随机性就把系数写成 <code>$\eta$</code> 控制的形式：方差取 <code>$\sigma_t^2 = \eta^2\,\dfrac{1-\bar\alpha_{t-1}}{1-\bar\alpha_t}\left(1-\dfrac{\bar\alpha_t}{\bar\alpha_{t-1}}\right)$</code>，<code>$\hat\epsilon$</code> 的系数相应变成 <code>$\sqrt{1-\bar\alpha_{t-1}-\sigma_t^2}$</code>，再额外加一项 <code>$\sigma_t\xi$</code>；η=1 就退化成 DDPM 采样。DDIM 更重要的性质是<strong>可以跳步</strong>：更新式里的 t−1 可以是任意更小的 t′，不必是相邻整数，这正是“少步推理”的起点，也是 20 步 DDIM 能出图、而 20 步原始 DDPM 不行（DDPM 的 β 是训练出来的逐步方差）的原因。</p>
+            <p>
+              <strong>Euler / Euler ancestral。</strong>欧拉法把去噪看成解 ODE，一步沿 σ 方向线性外推： <code>$z_{t-1} = z_t + (\sigma_{t-1} - \sigma_t)\,\dfrac{dz}{d\sigma}\right|_{\sigma_t}$</code>
+            </p>
+            <p>
+              其中导数由模型预测直接给出：<code>$\dfrac{dz}{d\sigma} = \dfrac{z_t - \hat z_0}{\sigma_t}$</code>（等价地等于 <code>$\hat\epsilon$</code>，因为在 <code>$z = z_0 + \sigma\epsilon$</code> 的约定下 <code>$dz/d\sigma = \epsilon$</code>）。也就是说 Euler 一步做的事情是“把当前点朝模型认为的干净点方向直线走一步”，步长就是 σ 的差值。ancestral 版本在每步之后额外把噪声加回去（把 σ 抬到 <code>$\sigma_{\text{up}} &gt; \sigma_{t-1}$</code> 再重新降下来），所以结果是随机的、每次都不一样；步数少时它额外注入的噪声占比大，画面会显得更“脏”但也更“活”，这是 Euler a 与 Euler 观感不同的根源。
+            </p>
+            <p>
+              <strong>Heun / 二阶方法。</strong>先用欧拉走半步拿到一个临时点，在那个点上再预测一次，然后用两处导数的平均做一次修正：<code>$z_{t-1} = z_t + \dfrac{\sigma_{t-1}-\sigma_t}{2}\left(\dfrac{dz}{d\sigma}\right|_{\sigma_t} + \dfrac{dz}{d\sigma}\right|_{\sigma_{t-1}}\right)$</code>。一阶方法的局部误差是 O(Δσ²)，二阶是 O(Δσ³)，所以同样步数下二阶更准、对步长更不敏感；代价是<strong>每一步要两次前向</strong>，时间与显存大致翻倍。步数给得足（30 步以上）时两者差距很小，步数压到 15 步以下时二阶通常明显更稳、更少出现结构错位。
+            </p>
+            <p>
+              <strong>DPM-Solver++(2M)。</strong>它先把扩散 ODE 换到 <code>$\lambda = \log(\bar\alpha_t/(1-\bar\alpha_t))$</code> 这个变量下，使得解可以用一个关于 λ 的指数积分近似，再把 <code>$\hat z_0$</code> 当成被积函数做多步二阶外推（2M 指二阶、multi-step，用上一步的 <code>$\hat z_0$</code> 一起拟合）。它的两个实际好处是：<strong>只依赖 <code>$\hat z_0$</code>，因此天然兼容 ε / v / flow 各种参数化</strong>（只要按第 4 节的换算表先把 <code>$\hat z_0$</code> 算出来），以及<strong>误差在噪声水平轴上分布得更均匀</strong>，所以 15–25 步就能出接近 50 步 DDIM 的结果，成了目前最常用的默认解算器之一。
+            </p>
+            <p>
+              <strong>UniPC 与一致性类（LCM / 一致性模型 / 蒸馏 sampler）。</strong>UniPC 是“统一预测—校正”框架：每一步先用多阶外推预测一个点，再用低阶公式校正一次，本质上是把 DPM-Solver 系列和预测校正思想统一起来，属于同类低步数解算器。LCM、一致性模型、以及各种 turbo / lightning 权重则不是更好的积分器，而是<strong>把多步过程蒸馏成极少步映射</strong>：它们训练网络让 <code>$f_\theta(z_t,t)$</code> 在少数几个噪声水平上直接落到对应的 z_0 或相邻轨迹点上。因此这类权重只能用配套的 sampler 和很少的步数（1–8 步），硬套 30 步 DDIM 反而会糊。
+            </p>
+            <p>
+              <strong>flow 的 Euler（<code>FlowMatchEulerDiscreteScheduler</code>）。</strong>更新式和上面的欧拉法完全是同一个欧拉积分，只是参数化换成了速度： <code>$z \leftarrow z + (\sigma_{\text{next}} - \sigma)\cdot v_\theta(z,\sigma)$</code>
+            </p>
+            <p>
+              其中 σ 由 sigma 表给出、σ_next 是下一个更小的噪声水平，v_θ 是速度预测。因为 flow 路径是直线、速度场在整个区间上变化平缓，同样步数下它的离散化误差通常比 VP 扩散更小，这也是 flow 主干敢用 20 步左右的原因；反过来，如果拿 DDPM 侧的 <code>DDIMScheduler</code> 去驱动一个 flow 权重（或反过来），因为参数化和 σ 含义都不一致，结果会直接错掉。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>sampler / solver</th>
+                    <th>更新公式要点</th>
+                    <th>随机性</th>
+                    <th>典型步数</th>
+                    <th>适合什么</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>DDIM</td>
+                    <td>由 <code>$\hat z_0$</code> 与 <code>$\hat\epsilon$</code> 重建到 σ_{t−1}，可任意跳步，η=0 时完全确定</td>
+                    <td>无（η=0）</td>
+                    <td>20–50</td>
+                    <td>要可复现、要稳定复现别人结果的场景</td>
+                  </tr>
+                  <tr>
+                    <td>Euler</td>
+                    <td>一阶：<code>$z + (\sigma_{\text{next}}-\sigma)\,dz/d\sigma$</code></td>
+                    <td>无</td>
+                    <td>20–40</td>
+                    <td>通用默认，速度快、结果干净</td>
+                  </tr>
+                  <tr>
+                    <td>Euler ancestral</td>
+                    <td>欧拉一步后再把噪声加回 σ_up</td>
+                    <td>有，每步注入</td>
+                    <td>20–40</td>
+                    <td>要纹理变化、要“手感”；低步数时噪声感更强</td>
+                  </tr>
+                  <tr>
+                    <td>Heun（二阶）</td>
+                    <td>欧拉半步 + 两处导数平均修正</td>
+                    <td>无</td>
+                    <td>15–30</td>
+                    <td>步数压得很低又不想结构崩</td>
+                  </tr>
+                  <tr>
+                    <td>DPM-Solver++(2M)</td>
+                    <td>换到 log-SNR 变量后做多步二阶外推，只用 <code>$\hat z_0$</code></td>
+                    <td>无</td>
+                    <td>15–25</td>
+                    <td>少步高质量，兼容 ε / v / flow 参数化</td>
+                  </tr>
+                  <tr>
+                    <td>UniPC</td>
+                    <td>多阶预测 + 低阶校正的统一框架</td>
+                    <td>无</td>
+                    <td>10–20</td>
+                    <td>更少步数下的高质量，社区常与 Karras sigmas 搭配</td>
+                  </tr>
+                  <tr>
+                    <td>LCM / 一致性 sampler</td>
+                    <td>网络被蒸馏成少步映射，更新式本身极简</td>
+                    <td>取决于实现</td>
+                    <td>1–8</td>
+                    <td>配套的 turbo / lightning / LCM 权重，追求实时</td>
+                  </tr>
+                  <tr>
+                    <td>FlowMatch Euler</td>
+                    <td>同一个欧拉积分，但用速度场与 flow 的 σ 表</td>
+                    <td>无</td>
+                    <td>20–30</td>
+                    <td>SD3 / FLUX / Qwen-Image / Wan 等 flow 主干</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              为什么同一份权重换个 sampler 结果就变？三个原因：<strong>离散步长</strong>（同样 20 步，谁走的路更贴近真实 ODE 解不一样）、<strong>随机性</strong>（ancestral 与 SDE 类采样器每步注入噪声，等价于在解上叠加了不同的扰动，最终落在不同的样本上）、<strong>二阶项</strong>（一阶方法扔掉的高阶信息被二阶方法捡回来，体现在细节和结构稳定性上）。所以“换 sampler”不是换滤镜，而是换了一条数值轨迹。
+            </p>
+            <p>
+              还有一条容易踩的坑：<strong>换 sampler 时，sigma 表要一起换</strong>。sampler 的更新式默认自己给出的 σ 序列是自洽的，但时间表（步点位置、是否用 Karras、shift 取多少、连续还是离散）是由 scheduler 的 <code>set_timesteps()</code> 重新生成的。把 A 的 timesteps 数组直接喂给 B 的 step 公式，等于用错的噪声水平去解释模型输出；反过来，只在 config 里改 sampler 名字而沿用旧的 sigmas，同样会出问题。换 sampler 的正确做法是替换整个 scheduler 对象（保留 <code>num_train_timesteps</code>、<code>beta_schedule</code>、<code>prediction_type</code> 这些训练侧字段），再重新调用一次 <code>set_timesteps()</code>。
+            </p>
+            <p>
+              实用建议：<strong>先固定 sampler 与步数，再比较模型</strong>——否则两个模型之间的差异里混着采样器差异，结论没有意义。用 CFG 时步数与 guidance 要一起调：guidance 调高会同时放大预测误差，低步数配高 guidance 最容易出结构崩坏，此时应该是“加步数 + 略微降 guidance”，而不是只动一个。要复现别人的图，必须同时对齐 <strong>sampler、调度（Karras / shift / spacing）、steps、guidance、seed</strong> 五项，缺一项结果就会不同；分辨率、latent 尺寸也会改变 dynamic shift 算出来的 mu，所以分辨率也属于复现条件。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th><code>scheduler_config</code> 字段</th>
+                    <th>含义</th>
+                    <th>不读它会怎样</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>num_train_timesteps</code></td>
+                    <td>训练用的 T，决定 β 表长度</td>
+                    <td>把 T=1000 的表当成 T=4000 用，噪声水平整体错位</td>
+                  </tr>
+                  <tr>
+                    <td><code>beta_schedule</code></td>
+                    <td><code>$\bar\alpha_t$</code> 曲线形状：linear / scaled_linear / squaredcos_cap_v2 / sigmoid</td>
+                    <td>换错曲线等于换了每一个 t 的噪声水平</td>
+                  </tr>
+                  <tr>
+                    <td><code>prediction_type</code></td>
+                    <td>网络输出是 ε、v 还是样本（flow 侧通常没有这个字段）</td>
+                    <td>最典型的“换错参数化直接糊掉”</td>
+                  </tr>
+                  <tr>
+                    <td><code>timestep_spacing</code></td>
+                    <td>推理步点怎么取：leading / trailing / linspace</td>
+                    <td>步数相同但起点噪声不同，少步时差异明显</td>
+                  </tr>
+                  <tr>
+                    <td><code>use_karras_sigmas</code></td>
+                    <td>是否改用 Karras 幂曲线分配 sigma</td>
+                    <td>步数分配完全变了，等同于换了另一条轨迹</td>
+                  </tr>
+                  <tr>
+                    <td><code>shift</code> / <code>use_dynamic_shifting</code></td>
+                    <td>flow 侧的时间重排，动态模式下由序列长度算 mu</td>
+                    <td>高分辨率或长视频上时间表失配，画面糊或过曝</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <h3>8. CFG / guidance：为什么要算两次前向</h3>
+            <p>
+              训练时条件 c 有概率被丢成空条件（classifier-free guidance 的字面意思就是“不带分类器的引导”），于是同一个网络同时会做有条件预测和无条件预测。推理时把两者按 guidance scale s 组合： <code>$\hat\epsilon = \epsilon_\theta(z_t,t,\emptyset) + s\cdot\left(\epsilon_\theta(z_t,t,c) - \epsilon_\theta(z_t,t,\emptyset)\right)$</code>。这里的 <code>$\emptyset$</code> 是空条件（无条件预测），s 就是 guidance scale。<strong>s = 1 时括号里的差值被原样加上去，公式退化成 <code>$\hat\epsilon = \epsilon_\theta(z_t,t,c)$</code>，也就是不做 CFG</strong>；s = 0 则完全忽略提示词，只用无条件预测。s &gt; 1 是在“有条件方向”上做外推，等于让模型比它本身更极端地朝提示词走。</p>
+            <p>
+              这个组合形式对四种参数化完全一样，只是把被组合的量换掉：ε-预测组合 <code>$\hat\epsilon$</code>，v-预测组合 <code>$\hat v$</code>，flow velocity 组合 <code>$\hat v$</code>，x_0-预测则组合 <code>$\hat z_0$</code>。组合结果直接交给 sampler 的 <code>step()</code>，所以 CFG 是“在 scheduler 之前”发生的一步，它不改变时间表。<strong>同一批权重里，s 调整的是这一步的预测方向与幅度，而不是噪声水平</strong>。
+            </p>
+            <p>
+              CFG 为什么有效，可以用隐式分类器解释：对 <code>$\log p(z_t \mid c)$</code> 求梯度，由贝叶斯公式可得 <code>$\nabla_{z_t}\log p(z_t \mid c) = \nabla_{z_t}\log p(z_t) + \nabla_{z_t}\log p(c \mid z_t)$</code>。而 <code>$\epsilon_\theta(z_t,t,c)$</code> − <code>$\epsilon_\theta(z_t,t,\emptyset)$</code> 正是 <code>$\nabla_{z_t}\log p(c \mid z_t)$</code> 的一个成比例估计（带负号与 σ_t 系数）。把这项乘上 s 再加回无条件预测，等价于<strong>用一个没有显式训练过的分类器去引导采样轨迹</strong>：s 越大，轨迹越偏向“这个 z_t 看起来像符合 c 的样本”的方向。代价也很直接：每一步要跑两次前向（一次有条件、一次无条件），显存与时间大致翻倍（批处理翻倍或两次串行前向），这是 CFG 最实际的成本，也是 guidance-distilled 模型想省掉的东西。</p>
+            <p>
+              把空条件换成一段具体文本，就是<strong>负面提示词</strong>（negative prompt）：<code>$\epsilon_\theta(z_t,t,c_{\text{neg}})$</code> 取代 <code>$\epsilon_\theta(z_t,t,\emptyset)$</code>，方向变成“远离负面描述”。它的效果强弱同样被 s 缩放，所以负面词写得又长又杂时，往往应该同时把 s 降一点，否则等于同时外推两个方向。
+            </p>
+            <p>
+              高 s 常带来另一个问题：过曝与色偏。原因是外推把预测的方差一起放大了，采样轨迹被推离了训练分布。修正手段是 <strong>CFG rescale</strong>——按标准差把组合后的预测重新标定回有条件预测的量级： <code>$\hat\epsilon' = \hat\epsilon \cdot \dfrac{\mathrm{std}\left(\epsilon_\theta(z_t,t,c)\right)}{\mathrm{std}\left(\hat\epsilon\right)}$</code>。实际实现里不会直接用 <code>$\hat\epsilon'$</code> 替换，而是用一个 0–1 的 rescale 系数在两者之间混合（Diffusers 的 <code>guidance_rescale</code>，社区常取 0.7 左右），这样既能压住过曝，又不会把构图自由度过分收紧。</p>
+            <p>
+              现在很多权重把引导直接训进了网络，成为 <strong>guidance-distilled / CFG-free</strong>：训练时把 guidance 值本身当作一个条件输入（例如 FLUX 的 <code>guidance_embed</code>，给时间条件的 MLP 多一路引导标量），推理时只需要<strong>一次前向</strong>，网络自己就知道“该按多强的引导画”。这带来两点和普通 CFG 不同的使用规则：第一，这类模型的 guidance 参数通常是<strong>固定值</strong>（发布方在训练时用过的那个值），而不是像 CFG 那样在 1–15 之间随便扫；第二，<strong>蒸馏权重的引导行为不等同于普通 CFG</strong>——它的引导是学出来的映射，继续往上调不会出现经典 CFG 那种“越调越锐、然后崩掉”的曲线，很多实现也不会再叠加一次真正的 CFG（<code>true_cfg</code> / 双引导），硬叠等于两套引导相加，结果容易失控。区分方法很简单：看 pipeline 里有没有 guidance 输入口（<code>guidance_embed</code> / <code>guidance</code> 参数）以及它是否需要 negative prompt。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>模型族</th>
+                    <th>常见 guidance 起点</th>
+                    <th>形态</th>
+                    <th>备注</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>SD 1.5</td>
+                    <td>约 7–8</td>
+                    <td>普通 CFG，需要负面提示词</td>
+                    <td>社区起点；超过 10 很容易过饱和、构图僵硬</td>
+                  </tr>
+                  <tr>
+                    <td>SDXL</td>
+                    <td>约 5–7</td>
+                    <td>普通 CFG，可配合 <code>guidance_rescale</code></td>
+                    <td>比 SD 1.5 更依赖负面提示词来压住画风漂移</td>
+                  </tr>
+                  <tr>
+                    <td>SD3 / SD3.5</td>
+                    <td>约 4–7</td>
+                    <td>普通 CFG，flow 主干</td>
+                    <td>提示词遵循本身较强，s 通常比 SD 1.5 低</td>
+                  </tr>
+                  <tr>
+                    <td>FLUX.1-dev</td>
+                    <td>约 3.5</td>
+                    <td>guidance embedding（一次前向）</td>
+                    <td>发布方给出的默认引导值，属于固定值而非可自由扫的 CFG</td>
+                  </tr>
+                  <tr>
+                    <td>Qwen-Image</td>
+                    <td>约 4</td>
+                    <td>普通 CFG（另支持 true_cfg 与负面提示词）</td>
+                    <td>文本渲染类任务上 s 稍高一些往往更稳</td>
+                  </tr>
+                  <tr>
+                    <td>视频主干（Wan / CogVideoX 等）</td>
+                    <td>约 5–8</td>
+                    <td>多为普通 CFG</td>
+                    <td>时序一致性对高 s 更敏感，调高时通常要同时加步数</td>
+                  </tr>
+                  <tr>
+                    <td>LCM / turbo / lightning 蒸馏权重</td>
+                    <td>约 1–2（或 1）</td>
+                    <td>普通 CFG 通常应压得很低</td>
+                    <td>蒸馏时按低引导训练，高 s 会直接糊</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              这张表是<strong>社区常用起点，不是官方保证值</strong>：s 的最优值取决于模型版本、分辨率、步数、采样器和提示词本身，同一个权重在不同工作流里差 1–2 都很正常。
+            </p>
+            <p>
+              s 太高的典型症状：画面过饱和、对比度异常、肤色发红或发橙，构图僵硬（主体被硬塞到画面中央、姿态别扭），细节开始崩（手指、文字、小结构糊成一片），偶尔出现大面积噪点或色块；视频上还会表现为帧间闪烁与运动僵硬。s 太低的典型症状相反：画面“好看”但不跟随提示词——该有的物体缺失、属性串位（颜色、数量、材质错）、文字内容不对，负面提示词也基本不起作用。判断方法不是看单张图，而是<strong>固定 seed 只改 s，扫 3–4 个值比较提示词遵循与画面稳定性的平衡点</strong>。
+            </p>
+            <p>
+              最后把 s 和步数放在一起看：guidance 是在每一步对预测做外推，步数越少，每一步承担的变化越大，误差被放大的机会也越多；所以少步采样通常要用更温和的 guidance，而高 guidance 需要更多步去把轨迹拉回稳定区间。复现别人的结果时，guidance 必须和 sampler、调度、steps、seed 一起对齐——这五项才是同一条采样轨迹的完整描述。
+            </p>
+            <h3>9. 通用条件路径：文本、时间和参考图如何进入主干</h3>
             <p>
               文本 encoder 把 prompt 变成文本 token <code>c_text</code>；在
               cross-attention 中，当前视觉 feature 产生 <code>Q</code>，
@@ -2273,151 +3054,7 @@ for n, p in model.named_parameters():
               latent、token 或 residual
               条件进入；它们不是只在第一次输入后就永久留在网络里。
             </p>
-            <h3>7. 通用模块与模型特色的边界</h3>
-            <p>
-              先用公共接口建立方向感，再把会影响训练和部署的差异留给模型详情页核对。VAE、主干、条件、输出和尺寸是共同的阅读骨架，但压缩率、参数化、条件注入和 solver 不能跨模型直接套用。
-            </p>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>通用接口</th>
-                    <th>大多数模型都能这样理解</th>
-                    <th>必须进入模型详情页核对的特色</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td>VAE</td>
-                    <td>像素编码为 latent，最后解码</td>
-                    <td>压缩倍率、latent 通道、缩放因子、是否 2D/3D</td>
-                  </tr>
-                  <tr>
-                    <td>主干</td>
-                    <td>在带噪 latent 上反复预测更新</td>
-                    <td>U-Net、DiT、MMDiT、double/single stream、层数和宽度</td>
-                  </tr>
-                  <tr>
-                    <td>条件</td>
-                    <td>文本、时间、图像/结构条件影响主干</td>
-                    <td>文本编码器组合、投影层、joint attention、mask 处理</td>
-                  </tr>
-                  <tr>
-                    <td>输出</td>
-                    <td>预测噪声、速度或 latent update</td>
-                    <td>epsilon/v/flow 参数化、输出通道排列、solver 配置</td>
-                  </tr>
-                  <tr>
-                    <td>尺寸</td>
-                    <td>由 latent 网格和 patch/token 数决定</td>
-                    <td>对齐倍数、位置编码、训练尺寸分布、官方上限</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <div class="arch-diagram">
-              <div class="arch-title">
-                SDXL 类潜扩散的组件级结构：右侧循环 N 个 denoising steps
-              </div>
-              <div class="dual-flow">
-                <div class="side-flow">
-                  <b>文本路径</b>
-                  <div class="arch-row">
-                    <span class="module-tag input">Tokenizer</span
-                    ><span>prompt → token ids</span>
-                  </div>
-                  <div class="arch-arrow">↓</div>
-                  <div class="arch-row">
-                    <span class="module-tag attn">CLIP-L</span
-                    ><span>per-token embedding</span>
-                  </div>
-                  <div class="arch-arrow">+</div>
-                  <div class="arch-row">
-                    <span class="module-tag attn">OpenCLIP bigG</span
-                    ><span>第二文本 embedding</span>
-                  </div>
-                  <div class="arch-arrow">+</div>
-                  <div class="arch-row">
-                    <span class="module-tag cond">pooled text</span
-                    ><span>尺寸/裁剪 time ids</span>
-                  </div>
-                </div>
-                <div class="center-flow">
-                  <div class="arch-row input">
-                    <span class="module-tag input">VAE Encode</span
-                    ><span>参考图 → latent [B,4,H/8,W/8]</span>
-                  </div>
-                  <div class="arch-arrow">↓ 加噪</div>
-                  <div class="repeat-box">
-                    <div class="repeat-label">
-                      U-Net：多尺度 down → mid → up
-                    </div>
-                    <div class="arch-row">
-                      <span class="module-tag norm">ResNet block</span
-                      ><span>Conv + norm + SiLU</span>
-                    </div>
-                    <div class="arch-row">
-                      <span class="module-tag attn">Spatial self-attn</span
-                      ><span>latent token 之间</span>
-                    </div>
-                    <div class="arch-row">
-                      <span class="module-tag attn">Cross-attn</span
-                      ><span>Q=latent，K/V=text</span>
-                    </div>
-                    <div class="arch-row">
-                      <span class="module-tag cond">Control / time</span
-                      ><span>timestep + size condition</span>
-                    </div>
-                    <div class="arch-row">
-                      <span class="module-tag residual">skip connection</span
-                      ><span>down 特征接回 up</span>
-                    </div>
-                  </div>
-                  <div class="arch-arrow">↓ 预测 ε / v</div>
-                  <div class="arch-row output">
-                    <span class="module-tag output">VAE Decode</span
-                    ><span>latent → RGB pixels</span>
-                  </div>
-                </div>
-              </div>
-              <figcaption>
-                图 S2 · 文本路径先得到 c_text；右侧每一步都把 z_t、t、c_text
-                和尺寸/控制条件送入 U-Net，得到 ε/v 预测，再交给 scheduler 生成
-                z_{t-1}。SDXL 的关键是多尺度卷积 U-Net 与
-                cross-attention；ControlNet 等控制分支通常把结构特征注入 U-Net
-                的多个 residual block，而不是只改 prompt。
-              </figcaption>
-            </div>
-            <h3>SDXL U-Net 内部的“层”</h3>
-            <p>
-              每个 down/up stage 由若干 ResNet
-              block、空间注意力和下采样/上采样组成。ResNet block 通常是归一化 →
-              SiLU → 3×3 卷积，再接时间 embedding
-              的线性投影并加到特征，随后第二个归一化/激活/卷积和残差相加。Cross-attention
-              把图像 latent 展平为 query，把文本 embedding 投影为
-              key/value；因此文本不是在每层重新 token 化，而是通过 K/V
-              调制视觉特征。U-Net 的 skip feature 让高分辨率局部细节回流到 up
-              path。
-            </p>
-            <div class="detail-entry">
-              <a href="image-models.html">先看图像公共模块详页 →</a
-              ><span>包含 VAE、条件、采样和通用任务接口</span
-              ><a href="image-dit.html">再看 SD3/MMDiT 逐模块结构 →</a
-              ><span>双流、联合 attention、输出头和 LoRA</span>
-            </div>
-            <p>
-              <strong>模型特色预告：</strong>SD3
-              把文本流和图像流分别投影后进行多模态联合 attention；FLUX
-              常见结构是先处理 image/text 双流、再进入单流 blocks；Qwen-Image
-              使用自己的多模态 Transformer 与图像/编辑条件路径。它们共享“latent
-              → token → Transformer → patch
-              更新”的接口，但不共享层数、文本编码器、参数名或训练目标。请分别进入
-              <a href="image-dit.html">SD3 详情</a>、<a href="image-flux.html"
-                >FLUX 详情</a
-              >、<a href="image-qwen.html">Qwen-Image 详情</a
-              >，不要把这里的共同骨架当成三者的完整实现。
-            </p>
-            <h3>训练时到底优化什么</h3>
+            <h3>10. 训练时到底优化什么：闭环与额外损失项</h3>
             <p>
               先从干净 latent <code>z₀</code> 与噪声 <code>ε</code> 构造时间点
               <code>z_t</code>。DDPM 风格模型可回归 <code>ε</code> 或
@@ -2568,12 +3205,1981 @@ for n, p in model.named_parameters():
                 >Diffusers Transformer 实现</a
               >
             </p>
+            <h3>11. 通用模块与模型特色的边界</h3>
+            <p>
+              先用公共接口建立方向感，再把会影响训练和部署的差异留给模型详情页核对。VAE、主干、条件、输出和尺寸是共同的阅读骨架，但压缩率、参数化、条件注入和 solver 不能跨模型直接套用。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>通用接口</th>
+                    <th>大多数模型都能这样理解</th>
+                    <th>必须进入模型详情页核对的特色</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>VAE</td>
+                    <td>像素编码为 latent，最后解码</td>
+                    <td>压缩倍率、latent 通道、缩放因子、是否 2D/3D</td>
+                  </tr>
+                  <tr>
+                    <td>主干</td>
+                    <td>在带噪 latent 上反复预测更新</td>
+                    <td>U-Net、DiT、MMDiT、double/single stream、层数和宽度</td>
+                  </tr>
+                  <tr>
+                    <td>条件</td>
+                    <td>文本、时间、图像/结构条件影响主干</td>
+                    <td>文本编码器组合、投影层、joint attention、mask 处理</td>
+                  </tr>
+                  <tr>
+                    <td>输出</td>
+                    <td>预测噪声、速度或 latent update</td>
+                    <td>epsilon/v/flow 参数化、输出通道排列、solver 配置</td>
+                  </tr>
+                  <tr>
+                    <td>尺寸</td>
+                    <td>由 latent 网格和 patch/token 数决定</td>
+                    <td>对齐倍数、位置编码、训练尺寸分布、官方上限</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="arch-diagram">
+              <div class="arch-title">
+                SDXL 类潜扩散的组件级结构：右侧循环 N 个 denoising steps
+              </div>
+              <div class="dual-flow">
+                <div class="side-flow">
+                  <b>文本路径</b>
+                  <div class="arch-row">
+                    <span class="module-tag input">Tokenizer</span
+                    ><span>prompt → token ids</span>
+                  </div>
+                  <div class="arch-arrow">↓</div>
+                  <div class="arch-row">
+                    <span class="module-tag attn">CLIP-L</span
+                    ><span>per-token embedding</span>
+                  </div>
+                  <div class="arch-arrow">+</div>
+                  <div class="arch-row">
+                    <span class="module-tag attn">OpenCLIP bigG</span
+                    ><span>第二文本 embedding</span>
+                  </div>
+                  <div class="arch-arrow">+</div>
+                  <div class="arch-row">
+                    <span class="module-tag cond">pooled text</span
+                    ><span>尺寸/裁剪 time ids</span>
+                  </div>
+                </div>
+                <div class="center-flow">
+                  <div class="arch-row input">
+                    <span class="module-tag input">VAE Encode</span
+                    ><span>参考图 → latent [B,4,H/8,W/8]</span>
+                  </div>
+                  <div class="arch-arrow">↓ 加噪</div>
+                  <div class="repeat-box">
+                    <div class="repeat-label">
+                      U-Net：多尺度 down → mid → up
+                    </div>
+                    <div class="arch-row">
+                      <span class="module-tag norm">ResNet block</span
+                      ><span>Conv + norm + SiLU</span>
+                    </div>
+                    <div class="arch-row">
+                      <span class="module-tag attn">Spatial self-attn</span
+                      ><span>latent token 之间</span>
+                    </div>
+                    <div class="arch-row">
+                      <span class="module-tag attn">Cross-attn</span
+                      ><span>Q=latent，K/V=text</span>
+                    </div>
+                    <div class="arch-row">
+                      <span class="module-tag cond">Control / time</span
+                      ><span>timestep + size condition</span>
+                    </div>
+                    <div class="arch-row">
+                      <span class="module-tag residual">skip connection</span
+                      ><span>down 特征接回 up</span>
+                    </div>
+                  </div>
+                  <div class="arch-arrow">↓ 预测 ε / v</div>
+                  <div class="arch-row output">
+                    <span class="module-tag output">VAE Decode</span
+                    ><span>latent → RGB pixels</span>
+                  </div>
+                </div>
+              </div>
+              <figcaption>
+                图 S2 · 文本路径先得到 c_text；右侧每一步都把 z_t、t、c_text
+                和尺寸/控制条件送入 U-Net，得到 ε/v 预测，再交给 scheduler 生成
+                z_{t-1}。SDXL 的关键是多尺度卷积 U-Net 与
+                cross-attention；ControlNet 等控制分支通常把结构特征注入 U-Net
+                的多个 residual block，而不是只改 prompt。
+              </figcaption>
+            </div>
+</section>
+<section
+            class="chapter"
+            id="module-atlas"
+            data-group="图像与视频"
+            data-title="02 · 通用模块图鉴"
+          >
+                        <div class="eyebrow">通用知识 / 模块图鉴</div>
+            <h2>通用模块图鉴：每个零件长什么样、被哪些模型用上</h2>
+            <p class="lead">
+              上一章讲概念与公式（张量形态、latent、上下采样、patchify（01 章）、扩散与采样、损失），这一章把散落在各个模型里的<strong>通用模块</strong>集中到一处，分成两部分：<strong>零件</strong>（block
+              与层内算子，如 ViT block、AdaLN、ResNet block、RoPE）和<strong>整机</strong>（把零件装起来的完整网络，如
+              U-Net、DiT / MMDiT、图像 VAE、视频 VAE、音频 VAE、文本编码器、多模态条件编码器）。每个模块只回答三个问题：①
+              它解决什么问题；② 内部逐层结构是什么（张量级，虚线框内画全）；③
+              哪些正式模型真的用了它。默认你只熟悉 attention 本身，其余名词都从零讲起。只改形状、不改变网络语义的<strong>上下采样</strong>与
+              <strong>patchify</strong> 已经在 01 章讲完，这里不再重复。
+            </p>
+            <div class="chapter-rule">
+              <strong>本章覆盖</strong
+              ><span
+                >零件：ViT block / AdaLN · AdaLN-Zero / MLP · SwiGLU · GEGLU /
+                LayerNorm · RMSNorm · GroupNorm · AdaGN / ResNet block /
+                Transformer2DModel / 位置编码 · RoPE / attention 变体 · GQA ·
+                QK-Norm / 条件注入三条路 / 视觉塔 + merger / MoE　整机：U-Net /
+                DiT · MMDiT · 单流主干 / 图像 VAE / 时间因果视频 VAE / 音频 VAE /
+                CLIP · T5 文本编码器 / 多模态条件编码器</span
+              >
+            </div>
+
+            <h3>0. 先把零件分成三层，别混着记</h3>
+            <p>
+              读架构图时最容易乱的地方，是把不同尺度东西放在一起比较。这一章按三层组织：
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>尺度</th>
+                    <th>是什么</th>
+                    <th>典型零件</th>
+                    <th>判断方法</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>宏观 · 链路</td>
+                    <td>一次生成从头到尾的组件顺序</td>
+                    <td>
+                      编码器、VAE、主干、scheduler/solver、解码器
+                    </td>
+                    <td>问「张量从哪来、到哪去；哪一步被重复调用」</td>
+                  </tr>
+                  <tr>
+                    <td>中观 · block</td>
+                    <td>被重复 N 次的同构单元</td>
+                    <td>
+                      ViT block、DiT/MMDiT block、ResNet block、Transformer2DModel、单流 block
+                    </td>
+                    <td>问「这个整体被 ×N 了吗，N 从哪读」</td>
+                  </tr>
+                  <tr>
+                    <td>微观 · 层内算子</td>
+                    <td>block 里的一两步计算</td>
+                    <td>
+                      LayerNorm / RMSNorm / GroupNorm、AdaLN、MLP · SwiGLU、attention
+                      的 mask、RoPE、上下采样、patchify（01 章）
+                    </td>
+                    <td>问「它改的是形状、数值范围，还是位置信息」</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>零件</th>
+                    <th>一句话作用</th>
+                    <th>本文章节</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>ViT block</td>
+                    <td>把图像切成 patch 当成 token，用标准 Transformer 处理</td>
+                    <td>1</td>
+                  </tr>
+                  <tr>
+                    <td>AdaLN / AdaLN-Zero</td>
+                    <td>用时间步/全局条件生成归一化的 scale·shift·gate</td>
+                    <td>2</td>
+                  </tr>
+                  <tr>
+                    <td>MLP / FFN / SwiGLU / GEGLU</td>
+                    <td>逐 token 的升维—激活—降维，不混合位置</td>
+                    <td>3</td>
+                  </tr>
+                  <tr>
+                    <td>LayerNorm / RMSNorm / GroupNorm / AdaGN</td>
+                    <td>把数值拉回稳定分布；归一化的「轴」不同</td>
+                    <td>4</td>
+                  </tr>
+                  <tr>
+                    <td>ResNet block</td>
+                    <td>卷积 + 归一化 + 时间条件 + 残差，U-Net/VAE 的积木</td>
+                    <td>5</td>
+                  </tr>
+                  <tr>
+                    <td>Transformer2DModel</td>
+                    <td>把特征图当序列做 self/cross attention，再变回特征图</td>
+                    <td>6</td>
+                  </tr>
+                  <tr>
+                    <td>上下采样 · patchify</td>
+                    <td>只改形状（H/W、时间轴、采样率）或把网格切成 token，都不注入条件</td>
+                    <td>见 01 §2–§3</td>
+                  </tr>
+                  <tr>
+                    <td>位置编码 · RoPE</td>
+                    <td>告诉模型 token 在空间/时间上的相对位置</td>
+                    <td>7</td>
+                  </tr>
+                  <tr>
+                    <td>attention 变体 · GQA · QK-Norm</td>
+                    <td>同一套注意力在不同 mask / 头共享 / 归一化下的形态</td>
+                    <td>8</td>
+                  </tr>
+                  <tr>
+                    <td>条件注入三条路</td>
+                    <td>时间步、文本序列、pooled 向量分别进哪里</td>
+                    <td>9</td>
+                  </tr>
+                  <tr>
+                    <td>视觉塔 + merger</td>
+                    <td>把 ViT 的输出变成 LLM 能读的 token 序列</td>
+                    <td>10</td>
+                  </tr>
+                  <tr>
+                    <td>MoE</td>
+                    <td>每个 token 只走少数几个 FFN 专家</td>
+                    <td>11</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              上面是<strong>零件</strong>。把零件按顺序装起来，就是下面这些<strong>整机</strong>——它们回答的是「一个模型的主干/编码器/VAE
+              一共有哪些层、每层张量长什么样」：
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>整机</th>
+                    <th>一句话作用</th>
+                    <th>本节</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>U-Net</td>
+                    <td>卷积多尺度主干：down → mid → up，同尺度 skip 拼接</td>
+                    <td>12</td>
+                  </tr>
+                  <tr>
+                    <td>DiT / MMDiT / 单流主干</td>
+                    <td>Transformer 主干：latent → patch 序列 → block ×N → unpatchify</td>
+                    <td>13</td>
+                  </tr>
+                  <tr>
+                    <td>图像 VAE（2D）</td>
+                    <td>像素 ↔ latent：8× 空间压缩、4 或 16 通道</td>
+                    <td>14</td>
+                  </tr>
+                  <tr>
+                    <td>时间因果视频 VAE</td>
+                    <td>视频像素 ↔ 视频 latent：16× 空间、4× 时间、24 通道</td>
+                    <td>15</td>
+                  </tr>
+                  <tr>
+                    <td>音频 VAE</td>
+                    <td>波形 ↔ 音频 latent：32 kHz → 40 Hz</td>
+                    <td>16</td>
+                  </tr>
+                  <tr>
+                    <td>文本编码器（CLIP / T5）</td>
+                    <td>prompt → 序列条件与 pooled 条件</td>
+                    <td>17</td>
+                  </tr>
+                  <tr>
+                    <td>多模态条件编码器</td>
+                    <td>视觉塔 + merger + decoder-only LLM，取某层当条件</td>
+                    <td>18</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <h3>1. ViT block：图像版的 Transformer 块</h3>
+            <p>
+              <strong>ViT = Vision Transformer</strong
+              >。它的核心思想只有一句：<strong>把图像当成一串 token</strong>，然后套用语言模型那套
+              Transformer 编码器。做法是把图切成固定大小的小方块（patch），每块展平后用一个线性层投影成向量，再加上位置编码，就得到
+              <code>[B,N,D]</code> 的序列——<code>N</code>
+              是 patch 数量，<code>D</code> 是模型宽度。之后每个 block
+              内部和语言模型完全一样：<strong
+                >LayerNorm → 多头自注意力 → 残差 → LayerNorm → MLP → 残差</strong
+              >。
+            </p>
+            <div class="gn-frame">
+              <div class="gn-frame-head">
+                <div>
+                  <strong>ViT block 的完整结构（图像分类 / 视觉塔通用）</strong>
+                  <small
+                    >虚线框内是一个完整工程链路：图像 → patch embedding → + 位置编码 →
+                    L 个同构 block → 输出 token 序列（或一个全局向量）。</small
+                  >
+                </div>
+                <span class="gn-badge">虚线框内＝一个完整结构</span>
+              </div>
+              <pre class="mermaid-lite" data-ml-label="ViT block 完整结构">
+flowchart TD
+  img["图像 [B,3,H,W]<br/>（视频则 [B,3,T,H,W]）"]:::in --> pe["PatchEmbed：Conv2d(k=14, s=14)<br/>[B,N,D_vit]，N=(H/14)·(W/14)<br/>视频换成 Conv3d + tubelet"]:::core
+  pe --> pos["+ 位置编码<br/>learned absolute / 插值外推"]:::op
+  pos --> blk["ViT block ×L<br/>LayerNorm → 多头自注意力 → residual<br/>LayerNorm → MLP(4×, GELU) → residual"]:::attn
+  blk --> head1["可选：class token 或平均池化<br/>→ 全局向量 [B,D_vit]"]:::out
+  blk --> head2["输出 token 序列 [B,N,D_vit]<br/>→ merger / projector 交给 LLM"]:::out
+              </pre>
+              <p class="gn-note">
+                <b>和语言模型 block 的唯一区别在两头：</b
+                >输入怎么来（patch embedding 而不是 tokenizer + embedding
+                表）、位置怎么给（可学习的绝对位置编码或 RoPE，而不是词表位置）。<b
+                  >中间的 block 完全一样。</b
+                >所以看到「ViT block ×L」时，可以直接按上面这四步去读代码。
+              </p>
+            </div>
+            <p>
+              <strong>用在哪里：</strong>CLIP 的图像塔（SD 1.5 / SDXL / SD3 用它当图像条件，IP-Adapter
+              用的也是它）、Qwen2.5-VL 与 Qwen3-VL 的视觉塔（Qwen-Image 的文本编码器、H3-Encoder 都是这一路）、部分视频
+              VAE 的 ViT 解码器（H3 官方提到「编码器训练后另有 ViT
+              解码器」）。把 <code>Conv2d</code> 换成 <code>Conv3d</code>、patch
+              带时间维，就是<strong>视频 ViT</strong>；把注意力限制在局部窗口里，就是
+              <strong>窗口注意力（window attention）</strong>，Qwen2.5-VL
+              的视觉塔就是窗口与全局注意力交替。
+            </p>
+
+            <h3>2. AdaLN：用条件去「调制」归一化</h3>
+            <p>
+              DiT（Diffusion Transformer）把 U-Net 换成 Transformer 之后遇到一个问题：<strong
+                >卷积网络里时间步是「加到特征上」的，Transformer 里没有卷积，时间步往哪加？</strong
+              >
+              答案就是 <strong>AdaLN = Adaptive Layer Normalization（自适应层归一化）</strong
+              >：不把条件加到特征上，而是<strong>用条件生成归一化的 scale（缩放）和 shift（平移）</strong>，顺手再生成一个
+              gate（门控）去缩放残差分支。
+            </p>
+            <div class="gn-frame">
+              <div class="gn-frame-head">
+                <div>
+                  <strong>AdaLN / AdaLN-Zero 的完整结构（一个 block 内）</strong>
+                  <small
+                    >虚线框内是一个完整 block：条件向量 → 6 组调制参数 → 两次归一化·调制·门控·残差。</small
+                  >
+                </div>
+                <span class="gn-badge">虚线框内＝一个完整结构</span>
+              </div>
+              <pre class="mermaid-lite" data-ml-label="AdaLN block 完整结构">
+flowchart TD
+  cond["条件：时间步 t（或 sigma）<br/>+ pooled 文本向量 / guidance"]:::cond --> temb["time embedding：sinusoidal → MLP<br/>再与 pooled 相加 → c [B,D]"]:::core
+  temb --> mod["线性层（每个 block 一份）<br/>→ shift_msa, scale_msa, gate_msa<br/>→ shift_mlp, scale_mlp, gate_mlp"]:::op
+  x["token x [B,N,D]"]:::in --> ln1["LayerNorm（不带仿射参数）"]:::norm
+  mod --> apply["x_n = x ⊙ (1 + scale_msa) + shift_msa"]:::core
+  ln1 --> apply
+  apply --> attn["多头注意力（可含 cross-attn）<br/>→ × gate_msa → residual add"]:::attn
+  attn --> ln2["LayerNorm"]:::norm
+  ln2 --> mlp2["MLP → × gate_mlp → residual add"]:::out
+              </pre>
+              <p class="gn-note">
+                <b>AdaLN-Zero 多了什么：</b>生成 gate
+                的那一层线性权重初始化为 0，于是训练刚开始时 <code>gate = 0</code>，整个
+                block 退化成恒等映射（输入直接穿过去）。这让非常深的 Transformer
+                也能稳定训起来。<b>和 cross-attention 的分工：</b>AdaLN
+                注入的是「一个全局条件向量」（时间步、pooled、类别、guidance），<b
+                  >不携带位置</b
+                >；文本这种「一长串 token」走的是 cross-attention
+                的 K/V。两者不能互换。
+              </p>
+            </div>
+            <p>
+              <strong>用在哪里：</strong>DiT 原始论文（Peebles &amp; Xie）、PixArt-α
+              系列、SD3 / SD3.5 的 MMDiT、FLUX、Qwen-Image，以及 MiniMax H3 的
+              H3-Omni 主干——H3 明确说「约 13B 参数在 AdaLN 分支」（该数字指官方 33B 原版权重；社区
+              int8 剪枝 repack 实测 AdaLN 相关约 43.65M，差异说明见
+              <a href="#atlas-dit">13.2</a>），因为每个 block
+              都要一份调制参数，而且这些参数只依赖条件、可以预计算缓存，所以纯推理部署时不必加载。SD
+              1.5 / SDXL 的 U-Net 里没有 AdaLN，它们用的是
+              <strong>AdaGN</strong>：在 ResNet block 的 GroupNorm
+              之后用时间向量做 scale/shift，作用一样、位置不同。
+            </p>
+
+            <h3>3. MLP / FFN / SwiGLU / GEGLU：逐 token 的前馈网络</h3>
+            <p>
+              Transformer block 里 attention 之外的那一半。它<strong
+                >对每个 token 单独做同一套线性变换</strong
+              >，不混合不同位置的信息，作用是给模型非线性表达力（attention
+              负责「看别处」，MLP 负责「想一下」）。标准形态是「升维 → 激活 → 降维」，升维倍数通常
+              4×。
+            </p>
+            <div class="gn-frame">
+              <div class="gn-frame-head">
+                <div>
+                  <strong>三种常见 FFN 形态</strong>
+                  <small
+                    >虚线框内是三条并列的完整前馈网络：普通两层 MLP、GELU 门控、SwiGLU
+                    门控。它们形状相同、参数不同。</small
+                  >
+                </div>
+                <span class="gn-badge">虚线框内＝一个完整结构</span>
+              </div>
+              <pre class="mermaid-lite" data-ml-label="FFN 三种形态">
+flowchart TD
+  x["token [B,N,D]"]:::in --> a1["① 普通 MLP<br/>Linear(D→4D) → GELU → Linear(4D→D)"]:::core
+  x --> g1["② GELU 门控（FLUX 的 ff.net）<br/>gate = GELU(x W_g)，up = x W_u<br/>h = gate ⊙ up → W_d"]:::core
+  x --> g2["③ SwiGLU（LLaMA / Qwen / H3）<br/>gate = SiLU(x W_gate)，up = x W_up<br/>h = gate ⊙ up → W_down"]:::core
+  a1 --> o["输出 [B,N,D]，与输入同形状<br/>再 residual add 回主干"]:::out
+  g1 --> o
+  g2 --> o
+              </pre>
+              <p class="gn-note">
+                <b>为什么会有门控版本：</b>门控（<code>gate ⊙ up</code>）让网络自己决定「放行多少信息」，同等参数量下效果更好，代价是多一次矩阵乘。LLaMA
+                之后的主流 LLM 都用 SwiGLU，并把隐藏宽度调成约
+                <code>8/3·D</code> 以匹配参数预算；FLUX 的 double-stream
+                里叫 <code>ff.net</code>，是 GELU 门控；SD3 的 MMDiT
+                用的是普通 GELU MLP。看配置时找 <code>hidden_act</code> / <code>activation_fn</code>
+                就能确认是哪一种。
+              </p>
+            </div>
+
+            <h3>4. 归一化家族：LayerNorm / RMSNorm / GroupNorm / AdaGN</h3>
+            <p>
+              归一化解决的问题是「深层网络里数值分布漂移」。它们的区别只有一个：<strong
+                >沿哪些轴求均值和方差</strong
+              >——搞清楚这一点，就不会再把它们当成同义词。
+            </p>
+            <div class="gn-frame">
+              <div class="gn-frame-head">
+                <div>
+                  <strong>三种归一化各自沿哪些轴做</strong>
+                  <small
+                    >虚线框内是同一颗特征张量分别走 LayerNorm / RMSNorm / GroupNorm
+                    的对比；输出形状都不变，变的是统计量的范围。</small
+                  >
+                </div>
+                <span class="gn-badge">虚线框内＝一个完整结构</span>
+              </div>
+              <pre class="mermaid-lite" data-ml-label="归一化的三种轴">
+flowchart TD
+  x["特征 [B,N,D]（Transformer）<br/>或 [B,C,H,W]（卷积网络）"]:::in --> ln["LayerNorm<br/>对每个 token 的 D 维：减均值、除标准差<br/>+ 可学习 γ、β"]:::norm
+  x --> rms["RMSNorm<br/>对每个 token 的 D 维：只除 √mean(x²)<br/>不减均值、通常无 bias，更省更快"]:::norm
+  x --> gn["GroupNorm<br/>把 C 分成 g 组，对「组内通道 + 空间」一起统计<br/>与 batch size 无关"]:::norm
+  ln --> o["输出形状不变 [B,N,D] / [B,C,H,W]"]:::out
+  rms --> o
+  gn --> o
+  o --> adagn["AdaGN（U-Net 专有）<br/>GroupNorm 之后再用时间向量做 scale / shift"]:::op
+              </pre>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>归一化</th>
+                    <th>统计范围</th>
+                    <th>可学习参数</th>
+                    <th>典型位置</th>
+                    <th>用在哪</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>LayerNorm</code></td>
+                    <td>单个 token 的宽度维 D</td>
+                    <td>γ、β</td>
+                    <td>Transformer block 的 norm1 / norm2</td>
+                    <td>CLIP、T5、ViT、DiT、SD3、FLUX</td>
+                  </tr>
+                  <tr>
+                    <td><code>RMSNorm</code></td>
+                    <td>单个 token 的宽度维 D，只算均方根</td>
+                    <td>γ（一般无 β）</td>
+                    <td>LLM 主干、以及被当作 QK-Norm 使用</td>
+                    <td>LLaMA / Qwen 系列、H3 主干、FLUX、SD3.5 的 <code>qk_norm=rms_norm</code></td>
+                  </tr>
+                  <tr>
+                    <td><code>GroupNorm</code></td>
+                    <td>通道分组后再带上空间位置</td>
+                    <td>γ、β</td>
+                    <td>卷积 block 的每次卷积之前</td>
+                    <td>U-Net 的 ResNet block、VAE encoder/decoder、ControlNet</td>
+                  </tr>
+                  <tr>
+                    <td><code>AdaGN</code></td>
+                    <td>GroupNorm 的统计 + 时间条件调制</td>
+                    <td>γ、β + 时间投影</td>
+                    <td>ResNet block 内</td>
+                    <td>DDPM / SD 1.5 / SDXL 的时间条件注入</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <h3>5. ResNet block：卷积网络的积木（ResnetBlock2D / 3D）</h3>
+            <p>
+              U-Net 和 VAE 里被重复最多的单元。名字叫 ResNet，但和图像分类的 ResNet
+              残差块不完全一样：这里多了<strong>时间条件的注入</strong>和
+              <strong>GroupNorm</strong>。记住「两次卷积 + 一次条件相加 + 一次残差」就不会读错。
+            </p>
+            <div class="gn-frame">
+              <div class="gn-frame-head">
+                <div>
+                  <strong>ResnetBlock2D / ResnetBlock3D 的完整结构</strong>
+                  <small
+                    >虚线框内是一次完整 forward：归一化 → 卷积 → 注入时间条件 → 再归一化卷积
+                    → 残差相加。</small
+                  >
+                </div>
+                <span class="gn-badge">虚线框内＝一个完整结构</span>
+              </div>
+              <pre class="mermaid-lite" data-ml-label="ResNet block 完整结构">
+flowchart TD
+  x["输入 feature [B,C,H,W]<br/>（视频 [B,C,T,H,W]）"]:::in --> n1["GroupNorm + SiLU"]:::norm
+  n1 --> c1["Conv 3×3（视频换 CausalConv3d）<br/>[B,C_out,H,W]"]:::core
+  temb["时间向量 time_emb [B,D_t]"]:::cond --> lin["Linear + SiLU → [B,C_out]"]:::op
+  c1 --> add1["逐元素相加：h = conv1(x) + t_proj"]:::core
+  lin --> add1
+  add1 --> n2["GroupNorm + SiLU → Dropout"]:::norm
+  n2 --> c2["Conv 3×3 → [B,C_out,H,W]"]:::core
+  c2 --> skip["residual add：out = x_proj + h<br/>通道变化时 x_proj 是 1×1 卷积"]:::out
+  x --> skip
+              </pre>
+              <p class="gn-note">
+                <b>3D 版本只改两件事：</b>卷积变成 <code>CausalConv3d</code>（时间维只看当前与过去帧）、归一化仍是
+                GroupNorm；时间维的下采样由 block 之后的 stride 卷积负责，不在这里。<b
+                  >Up block 里为什么是 3 个 Resnet：</b
+                >因为要额外接住同尺度的 skip，Diffusers 用
+                <code>layers_per_block + 1</code> 个 Resnet 来消化拼接后的通道数。
+              </p>
+            </div>
+            <p>
+              <strong>用在哪里：</strong>SD 1.5 / SDXL 的 U-Net
+              每一级（Down / Mid / Up 全是它）、ControlNet、所有 <code>AutoencoderKL</code>
+              型 VAE 的编码器与解码器、H3 / Wan / CogVideoX
+              这类视频 VAE 的 <code>ResBlock3D</code>。
+            </p>
+
+            <h3>6. Transformer2DModel：U-Net 里的「空间 Transformer」</h3>
+            <p>
+              U-Net 是卷积网络，但它必须在 <code>32×32</code>、<code>64×64</code>
+              这些较低分辨率上做全局信息交换和文本条件注入，靠的就是插在 ResNet 之间的
+              <strong>Transformer2DModel</strong>（Diffusers 里也叫 Spatial
+              Transformer）。它做的事情是：<strong
+                >把特征图临时展开成 token 序列，做完注意力再折回特征图</strong
+              >。
+            </p>
+            <div class="gn-frame">
+              <div class="gn-frame-head">
+                <div>
+                  <strong>Transformer2DModel 的完整结构</strong>
+                  <small
+                    >虚线框内是一次完整 forward：特征图 → 展平成 token → self-attn →
+                    cross-attn（读文本 c_text）→ FFN → 折回特征图 → 残差。</small
+                  >
+                </div>
+                <span class="gn-badge">虚线框内＝一个完整结构</span>
+              </div>
+              <pre class="mermaid-lite" data-ml-label="Transformer2DModel 完整结构">
+flowchart TD
+  x["feature [B,C,H,W]"]:::in --> norm["GroupNorm"]:::norm
+  norm --> flat["reshape：[B,C,H,W] → [B,H·W,C]"]:::op
+  flat --> pin["proj_in：Linear(C→D)"]:::core
+  ctx["c_text [B,77,2048]（SDXL）"]:::cond --> cross["Cross-Attention<br/>Q = 视觉 token，K/V = c_text"]:::attn
+  pin --> self["Self-Attention<br/>视觉 token 互相看"]:::attn
+  self --> cross
+  cross --> ff["FeedForward（MLP + residual）"]:::core
+  ff --> pout["proj_out：Linear(D→C)"]:::core
+  pout --> unflat["reshape 回 [B,C,H,W]"]:::op
+  unflat --> res["residual add：与输入 feature 相加"]:::out
+  x --> res
+              </pre>
+            </div>
+            <p>
+              <strong>用在哪里：</strong>SD 1.5 / SDXL 的 <code>CrossAttnDownBlock2D</code> /
+              <code>CrossAttnUpBlock2D</code> / <code>UNetMidBlock2DCrossAttn</code>
+              里（<code>attentions</code> 那几层）、ControlNet 的对应副本、SDXL refiner。注意它<strong
+                >只出现在较低分辨率</strong
+              >——在 <code>128×128</code> 上做全局注意力太贵，所以最外层 down block
+              通常只有卷积。更彻底的做法是像 DiT 那样*全程*用 Transformer，那就连 U-Net
+              都不需要了。
+            </p>
+
+            
+            
+            <h3>7. 位置编码：模型怎么知道 token 在空间/时间上的位置</h3>
+            <p>
+              attention 本身是「无序」的：把 token
+              打乱顺序，输出只跟着打乱。所以必须显式注入位置信息。工程上常见四种做法，看代码时先确认是哪一种。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>类型</th>
+                    <th>怎么加</th>
+                    <th>外推能力</th>
+                    <th>用在哪</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>可学习绝对位置（learned absolute）</td>
+                    <td>一张 <code>[max_N,D]</code> 的参数表，按序号取出来加到 token 上</td>
+                    <td>差，换分辨率要插值</td>
+                    <td>ViT / CLIP 图像塔、DiT 的 <code>pos_embed</code>（SD3 有 <code>pos_embed_max_size=192</code>）</td>
+                  </tr>
+                  <tr>
+                    <td>正弦位置（sinusoidal）</td>
+                    <td>用不同频率的 sin/cos 直接算出来，无参数</td>
+                    <td>好</td>
+                    <td>扩散模型的时间步编码（DDPM / SD / FLUX 的 <code>time_proj</code>）</td>
+                  </tr>
+                  <tr>
+                    <td>相对位置偏置（relative bias）</td>
+                    <td>在 attention 分数上加一个只与「相隔多远」有关的可学习标量</td>
+                    <td>较好</td>
+                    <td>T5 文本编码器</td>
+                  </tr>
+                  <tr>
+                    <td>旋转位置编码（RoPE）</td>
+                    <td>把 Q/K 的每两维看成复数平面，按位置角度旋转</td>
+                    <td>好，可扩展到多维</td>
+                    <td>Qwen-Image（<code>axes_dims_rope=[16,56,56]</code>）、FLUX（<code>(0,h,w)</code>）、H3 的 <code>MM-RoPE (t,h,w)</code>、Qwen2.5-VL / LLaMA 等 LLM</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              <strong>RoPE 为什么能做成多维：</strong>把宽度 D
+              分成几段，每段负责一个轴（时间 t、高 h、宽 w），每段内部再做一维旋转；于是同一个
+              attention 里可以同时表达「第几帧、第几行、第几列」。H3
+              的 <code>MM-RoPE (t,h,w)</code> 和 Qwen-Image 的
+              <code>[16,56,56]</code> 都是这个思路；<code>0</code>
+              表示该轴不旋转（FLUX 对文本 token 就用 0）。位置编码的选择会决定模型能不能处理训练时没见过的分辨率或时长，这也是「为什么
+              1024 训的模型跑 2048 会崩」的常见原因之一。
+            </p>
+
+            <h3>8. attention 的变体：同一个算式的不同外壳</h3>
+            <p>
+              你已经知道 attention 是 <code>softmax(QKᵀ/√d)·V</code>。实际模型里它的差别只有四处：<strong
+                >Q/K/V 从哪来、谁能看谁（mask）、K/V 头怎么共享、Q/K
+                做不做归一化</strong
+              >。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>变体</th>
+                    <th>Q / K / V 的来源</th>
+                    <th>mask</th>
+                    <th>用在哪</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Self-Attention</td>
+                    <td>同一段序列自己的投影</td>
+                    <td>无（双向，能看全序列）</td>
+                    <td>U-Net 的 Spatial Transformer、ViT、DiT 的 <code>norm1</code> 之后</td>
+                  </tr>
+                  <tr>
+                    <td>Cross-Attention</td>
+                    <td>Q 来自视觉/主序列，K/V 来自条件（文本、参考图）</td>
+                    <td>常按 padding 屏蔽无效文本 token</td>
+                    <td>SD 的 U-Net、SDXL、ControlNet、IP-Adapter</td>
+                  </tr>
+                  <tr>
+                    <td>联合注意力（joint attention）</td>
+                    <td>两路各自投影后<strong>沿序列维拼接</strong>，一起做一次 attention，再拆回</td>
+                    <td>按模态边界处理</td>
+                    <td>SD3 / SD3.5 的 MMDiT、FLUX 的 double-stream、Qwen-Image、H3 的单流主干</td>
+                  </tr>
+                  <tr>
+                    <td>因果注意力（causal）</td>
+                    <td>同上，但只能看当前及之前的 token</td>
+                    <td>下三角掩码</td>
+                    <td>所有 decoder-only LLM，包括当条件编码器用的 Qwen2.5-VL / Qwen3-VL / CLIP 文本塔</td>
+                  </tr>
+                  <tr>
+                    <td>窗口注意力（window）</td>
+                    <td>同上，但只在局部窗口内互相看</td>
+                    <td>窗口掩码，窗口之间靠移动或全局层连通</td>
+                    <td>Qwen2.5-VL 视觉塔、Swin 类视觉主干</td>
+                  </tr>
+                  <tr>
+                    <td>GQA（分组查询注意力）</td>
+                    <td>Q 有 <code>h_q</code> 个头，K/V 只有 <code>h_kv</code> 个头，多个 Q 头共享一组 K/V</td>
+                    <td>同 decoder-only（因果）</td>
+                    <td>LLaMA-2/3、Qwen 系列、H3 的条件编码器与主干（省 KV cache 与显存）</td>
+                  </tr>
+                  <tr>
+                    <td>QK-Norm</td>
+                    <td>不算新结构：对投影后的 Q、K 再做一次 RMSNorm/LayerNorm</td>
+                    <td>不变</td>
+                    <td>SD3.5（<code>qk_norm=rms_norm</code>）、FLUX（RMSNorm 作用于 Q/K）</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              <strong>一句话记法：</strong>self-attn 是「自己人互相看」，cross-attn
+              是「问外部条件」，joint attention 是「把两路人拼成一队再互相看」，causal
+              是「不许偷看未来」，window 是「只看邻居」，GQA 是「几个查询共用一本字典」，QK-Norm
+              是「先归一化再算相似度」。
+            </p>
+
+            <h3>9. 条件注入的三条路：时间、文本序列、pooled 向量</h3>
+            <p>
+              同一个模型里往往同时有三类条件，它们走三条不同的路。<strong
+                >把它们写成一个「条件融合」模块是最常见的错误。</strong
+              >
+            </p>
+            <div class="gn-frame">
+              <div class="gn-frame-head">
+                <div>
+                  <strong>三类条件的三条注入路径</strong>
+                  <small
+                    >虚线框内是一张完整的条件路由图：标量条件 → 调制；序列条件 →
+                    K/V；池化向量 → 与时间向量相加后再调制。</small
+                  >
+                </div>
+                <span class="gn-badge">虚线框内＝一个完整结构</span>
+              </div>
+              <pre class="mermaid-lite" data-ml-label="条件注入三条路">
+flowchart TD
+  t["时间步 t / sigma<br/>（或 flow 的 t）"]:::cond --> te["sinusoidal → MLP<br/>time embedding [B,D]"]:::core
+  pooled["pooled 文本向量 [B,1280]<br/>+ added time/size ids"]:::cond --> merge["逐元素相加 → c [B,D]"]:::core
+  te --> merge
+  merge --> mod["AdaLN / AdaGN：生成 scale · shift · gate<br/>注入每个 block 的归一化"]:::op
+  seq["文本 token [B,77,2048] 或 [B,N_txt,2432]"]:::cond --> kv["经投影产生 K / V"]:::op
+  vis["视觉 token（主干当前状态）"]:::in --> q["产生 Q"]:::op
+  kv --> cross["cross-attention / joint attention<br/>每步重新读取同一份 K/V"]:::attn
+  q --> cross
+  mod --> blk["主干 block"]:::core
+  cross --> blk
+  blk --> out["更新后的视觉 token"]:::out
+              </pre>
+              <p class="gn-note">
+                <b>读图要点：</b>① 时间步和 pooled 都是「一个向量」，所以只能做
+                scale/shift/gate（调制），<b>不能被 attention 读</b>；②
+                文本是一串 token，所以走 K/V；③ 三条路里只有第一、二条能在循环外算好缓存，<b
+                  >K/V 虽然每步同一份，但每一步的 Q 都不同，所以 cross-attention
+                  每步都要重算</b
+                >；④ SD 1.5 没有 pooled 这一路（只有一个文本编码器），SDXL
+                才有 <code>pooled + added time/size ids</code>；FLUX
+                额外有一条 <code>guidance_embed</code>，也是走调制。
+              </p>
+            </div>
+
+            <h3>10. 视觉塔 + merger：怎么把图像塞进语言模型</h3>
+            <p>
+              H3-Encoder、Qwen2.5-VL 这类「用大模型当条件编码器」的模块里，图像不是直接给
+              LLM 的，而是先过视觉塔，再由 <strong>merger / projector</strong>
+              把 token 数量压下来、宽度对齐到 LLM。
+            </p>
+            <div class="gn-frame">
+              <div class="gn-frame-head">
+                <div>
+                  <strong>ViT 塔 + merger 的完整结构</strong>
+                  <small
+                    >虚线框内是从图像到 LLM 输入序列的完整路径：patch → ViT blocks →
+                    相邻 token 合并 → 与文本 embedding 拼接。</small
+                  >
+                </div>
+                <span class="gn-badge">虚线框内＝一个完整结构</span>
+              </div>
+              <pre class="mermaid-lite" data-ml-label="视觉塔与 merger">
+flowchart TD
+  img["图像 / 视频帧<br/>[B,3,H,W] 或 [B,3,T,H,W]"]:::in --> pe["PatchEmbed（14×14，视频用 Conv3d）<br/>[B,N_img,D_vit] + 位置编码"]:::core
+  pe --> vit["ViT block ×L_v<br/>窗口注意力与全局注意力交替"]:::attn
+  vit --> mer["merger：2×2 相邻 token 拼接 → MLP<br/>[B,N_img/4,D_llm]"]:::core
+  txt["文本 token embedding [B,N_txt,D_llm]"]:::cond --> cat["concat(seq)<br/>[B,N_txt+N_img/4,D_llm]"]:::latent
+  mer --> cat
+  cat --> llm["decoder-only LLM 堆叠 ×L<br/>RMSNorm + GQA + RoPE + SwiGLU"]:::attn
+  llm --> tap["取指定层 hidden states<br/>（H3-Encoder 取第 50 层）"]:::out
+              </pre>
+              <p class="gn-note">
+                <b>为什么必须 merger：</b>视觉 token 太多——一张 1024×1024
+                的图在 14×14 patch 下有 5000 多个 token，直接进 LLM
+                会撑爆上下文。2×2 合并把数量除以 4，再用 MLP 把宽度从
+                <code>D_vit</code> 对齐到 <code>D_llm</code>，这才让「图像 + 长文本」在同一段序列里共存。
+              </p>
+            </div>
+
+            <h3>11. MoE：每个 token 只走少数几个专家</h3>
+            <p>
+              <strong>MoE = Mixture of Experts（混合专家）</strong>。做法是把
+              Transformer block 里的那一个 FFN 换成 <code>k</code>
+              个并行的 FFN（专家），再用一个小网络（router）给每个 token
+              打分、只把它送给分数最高的前 <code>top-k</code> 个专家，最后按权重把结果加起来。于是<strong
+                >总参数量可以很大，但每个 token 的实际计算量只按 top-k 算</strong
+              >。
+            </p>
+            <div class="gn-frame">
+              <div class="gn-frame-head">
+                <div>
+                  <strong>MoE 层的完整结构</strong>
+                  <small
+                    >虚线框内是一个完整的稀疏 FFN 层：token → router 打分 → top-k
+                    选择 → 专家计算 → 加权求和，以及配套的负载均衡。</small
+                  >
+                </div>
+                <span class="gn-badge">虚线框内＝一个完整结构</span>
+              </div>
+              <pre class="mermaid-lite" data-ml-label="MoE 层结构">
+flowchart TD
+  x["token [B,N,D]"]:::in --> router["router：Linear(D→E)<br/>每个 token 得到 E 个分数"]:::op
+  router --> topk["取 top-k（常见 k=1、2 或 8）<br/>归一化成权重 g"]:::op
+  topk --> e1["专家 1：FFN(D→4D→D)"]:::core
+  topk --> e2["专家 2：FFN(D→4D→D)"]:::core
+  topk --> e3["… 专家 E<br/>可以分布在多张卡上"]:::core
+  e1 --> sum["按权重求和：y = Σ g_i · Expert_i(x)"]:::out
+  e2 --> sum
+  e3 --> sum
+  sum --> bal["负载均衡损失 / capacity 限制<br/>避免所有 token 挤到同一个专家"]:::op
+  bal --> res["residual add 回主干"]:::out
+              </pre>
+              <p class="gn-note">
+                <b>工程影响：</b>MoE 的显存占用看「总参数量」，算力看「激活参数量」；专家分散在多卡时，token
+                的路由会带来 <b>all-to-all 通信</b>（每张卡同时向其它所有卡各发一份<b>不同</b>的数据：本卡把
+                token 派发到专家所在的卡，专家算完再发回来），这也是它最难调的部分。写模型卡时要同时标出<strong
+                  >总参数 / 激活参数 / 专家数 / top-k</strong
+                >，只写一个数字会误导读者。并行侧的细节见
+                <a href="parallel.html#expert">并行与调度详解 §4 EP</a>。
+              </p>
+            </div>
+            <p>
+              <strong>用在哪里：</strong>Qwen3-MoE、DeepSeek 等开源
+              LLM；视频侧的 Wan2.2 用「高噪声 / 低噪声专家」的形式做了双专家结构（见
+              <a href="video-models.html">主流视频模型与任务</a>）。<strong
+                >注意</strong
+              >：SD3、FLUX、Qwen-Image 的图像主干都是<strong>稠密（dense）</strong>模型，不是
+              MoE；看到「专家」二字要确认是 LLM 侧还是视频侧。
+            </p>
+
+            <h3 id="generic-structure">整机结构：把零件装成完整网络（12–18）</h3>
+            <p>
+              有一类模块几乎每个生成模型都有，但发行方只公开它的<strong
+                >压缩率、通道数和名字</strong
+              >，不公开逐层结构。MiniMax H3 的“时间因果视频 VAE”就是这种情况：官方只公布
+              <code>f16t4d24</code>（空间 16×、时间 4×、24 通道 latent）和
+              <code>1×2×2</code> patch，没给卷积层数与归一化位置。这类模块的正确读法是：<strong
+                >先按通用实现补一张完整结构</strong
+              >（张量级、逐层写形状），标明它是通用参考而不是官方配置；<strong
+                >再拿本地 checkpoint 核验</strong
+              >——只读 safetensors 头部就能拿到层数与张量形状（H3 这条已经这样核验过，见
+              <a href="#atlas-video-vae">15 视频 VAE</a> 与 <code>H3-CHECKPOINT-NOTES.md</code>）。模型详情页里再用一个<strong
+                >虚线框</strong
+              >
+              把整张网络框起来，表示“虚线框内就是一个完整结构”。下面 12～18 就是这类模块的完整结构。
+            </p>
+            <h3 id="atlas-unet">12. U-Net 整机：同一张图在多个尺度上处理</h3>
+            <p>
+              <strong>U-Net</strong>
+              不是“一层卷积”，而是一条带有跳跃连接的多尺度
+              encoder-decoder。输入是带噪 latent <code>x_t</code>，先经过 Down
+              blocks 逐步降低 H/W、增加通道和感受野；中间的 Mid block
+              在最低分辨率上处理更大的空间关系；Up blocks 再逐步恢复
+              H/W，并把对应 Down block 保存的 feature 通过
+              <strong>skip connection</strong>
+              拼接或相加回来。这样低分辨率路径负责全局布局，高分辨率 skip
+              feature 负责边缘、纹理和局部定位。
+            </p>
+            <div class="arch-diagram">
+              <div class="arch-title">
+                U-Net 的一轮 forward：保存什么，在哪里合并
+              </div>
+              <div class="flow stack">
+                <div class="node input">
+                  输入 x_t<br />[B,C,H,W] + timestep t + text context
+                </div>
+                <b class="arrow">↓</b>
+                <div class="node">
+                  Down 1<br />ResNet / attention<br />保存 skip s1<br />→
+                  [B,C1,H/2,W/2]
+                </div>
+                <b class="arrow">↓</b>
+                <div class="node alt">
+                  Down 2<br />更低分辨率、更大感受野<br />保存 skip s2
+                </div>
+                <b class="arrow">↓</b>
+                <div class="node alt">
+                  Mid<br />ResNet + self/cross-attention<br />全局 latent 表征
+                </div>
+                <b class="arrow">↓</b>
+                <div class="node">Up 2<br />上采样 + 与 s2 合并</div>
+                <b class="arrow">↓</b>
+                <div class="node">Up 1<br />上采样 + 与 s1 合并</div>
+                <b class="arrow">↓</b>
+                <div class="node output">输出 eps 或 v<br />[B,C,H,W]</div>
+              </div>
+              <figcaption>
+                U-Net 的 skip 不是额外输入图片；它是本次 forward 的 Down
+                路径中保存的中间 feature，并在对应 Up stage 合并。
+              </figcaption>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>阶段</th>
+                    <th>输入</th>
+                    <th>输出</th>
+                    <th>主要作用</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Down block</td>
+                    <td>feature [B,C,H,W]、t、text</td>
+                    <td>更小 H/W 的 feature + skip</td>
+                    <td>扩大感受野，逐级提取局部到全局结构。</td>
+                  </tr>
+                  <tr>
+                    <td>Mid block</td>
+                    <td>最低分辨率 feature、t、text</td>
+                    <td>同尺度 feature</td>
+                    <td>在较小网格上混合远距离空间关系。</td>
+                  </tr>
+                  <tr>
+                    <td>Up block</td>
+                    <td>上一层 feature + 对应 skip、t、text</td>
+                    <td>更大 H/W 的 feature</td>
+                    <td>恢复空间细节，并把高分辨率定位信息接回来。</td>
+                  </tr>
+                  <tr>
+                    <td>Output head</td>
+                    <td>最后的 feature</td>
+                    <td>eps 或 v，与 x_t 同形状</td>
+                    <td>预测当前噪声/速度目标，交给 scheduler 更新 latent。</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <h4>12.1 张量级整机图（SDXL 类，3 级 down / 3 级 up）</h4>
+            <p>
+              上面那张图讲的是「多尺度 + skip」这个思路，这里把它落成一张<strong>张量级整机图</strong>：同一个带噪 latent
+              <code>z_t</code> 被逐级下采样到更小的网格上处理，再逐级上采样回来，每一次空间尺寸变化都伴随通道数变化。
+              Down 侧每个 stage 里是「<code>ResnetBlock2D</code> ×N + <code>Transformer2DModel</code>」——前者做局部卷积特征，
+              后者把特征图拉平成 token 序列，先做空间 self-attention，再用文本条件做 cross-attention。
+            </p>
+            <p>
+              编码侧每级都把「本级处理完的 feature」当作 skip
+              feature 存起来；解码侧在每一级先把它按<strong>通道维</strong>拼接回来（<code>torch.cat([up, skip], dim=1)</code>，所以拼接处通道数会先翻倍），
+              再继续算 <code>ResnetBlock2D</code> 和 <code>Transformer2DModel</code>，最后用 <code>Upsample2D</code> 放大网格。
+              最高分辨率的细节就是靠这些 skip 带过去的，最低分辨率的全局布局则交给 Mid block。
+            </p>
+            <div class="gn-frame">
+              <div class="gn-frame-head">
+                <div>
+                  <strong>完整结构 · U-Net 整机（SDXL 类，3 级 down / 3 级 up）</strong>
+                  <small
+                    >虚线框内是一个完整主干：带噪 latent <code>z_t</code> → 3 级 down stage →
+                    Mid block → 3 级 up stage（每级拼接同尺度 skip）→
+                    输出头。框内每个节点都标了输入输出的张量形状。</small
+                  >
+                </div>
+                <span class="gn-badge">虚线框内＝一个完整结构</span>
+              </div>
+              <pre class="mermaid-lite" data-ml-label="SDXL 类 U-Net 整机完整结构（张量级）">
+flowchart TD
+  z["带噪 latent z_t<br/>[B,4,h,w]"]:::in --> cin["conv_in 3×3<br/>[B,320,h,w]"]:::core
+  c["文本条件 c_text<br/>[B,77,2048]<br/>CLIP-L 768 + CLIP-G 1280"]:::cond --> cin
+  t["时间步 t<br/>time embedding [B,1280]<br/>+ pooled 文本向量"]:::cond
+  t -.-> cin
+  cin --> d1["Down stage 1（h×w，320 通道）<br/>ResnetBlock2D ×2（DownBlock2D，本级无注意力）<br/>skip0 [B,320,h,w] → Downsample2D"]:::core
+  d1 --> d2["Down stage 2（h/2×w/2，640 通道）<br/>ResnetBlock2D ×2 + Transformer2DModel<br/>含 2 个 BasicTransformerBlock<br/>skip1 [B,640,h/2,w/2] → Downsample2D"]:::core
+  d2 --> d3["Down stage 3（h/4×w/4，1280 通道）<br/>ResnetBlock2D ×2 + Transformer2DModel<br/>含 10 个 BasicTransformerBlock<br/>skip2 [B,1280,h/4,w/4]，本级不下采样"]:::core
+  d3 --> mid["Mid block（h/4×w/4）<br/>ResnetBlock2D → Transformer2DModel（10 个块）→ ResnetBlock2D<br/>[B,1280,h/4,w/4]"]:::attn
+  mid --> u0["Up stage 1（h/4×w/4）<br/>cat(skip2 ‖ mid) = 2560 → 1280<br/>ResnetBlock2D ×3 + Transformer2DModel<br/>+ Upsample2D → h/2×w/2"]:::core
+  u0 --> u1["Up stage 2（h/2×w/2）<br/>cat(skip1 ‖ u0) = 1920 → 640<br/>ResnetBlock2D ×3 + Transformer2DModel<br/>+ Upsample2D → h×w"]:::core
+  u1 --> u2["Up stage 3（h×w）<br/>cat(skip0 ‖ u1) = 960 → 320<br/>ResnetBlock2D ×3（本级无注意力）"]:::core
+  u2 --> out["输出头：GroupNorm → SiLU → Conv2d(320→4, 3×3)<br/>预测 eps / v [B,4,h,w]（与 z_t 同形状）"]:::out
+  d3 -.->|"skip2 1280@h/4"| u0
+  d2 -.->|"skip1 640@h/2"| u1
+  d1 -.->|"skip0 320@h"| u2
+              </pre>
+              <div class="gn-legend">
+                <span><i></i>计算层（ResnetBlock2D / Transformer2DModel / 上下采样）</span>
+                <span><i class="gn-dash"></i>虚线箭头＝同尺度 skip feature，在通道维拼接</span>
+                <span><i class="gn-solid"></i>实线箭头＝主数据流</span>
+              </div>
+              <p class="gn-note">
+                <b>读图要点：</b>① 分辨率链是 <code>h×w → h/2×w/2 → h/4×w/4</code> 再原路放大回去，只由
+                <code>Downsample2D</code> / <code>Upsample2D</code> 改变；<b>SDXL 只有 2 个 downsampler</b>（在 stage 1、stage 2
+                的末尾），所以 <b>Mid block 在 h/4×w/4</b>，而不是 h/8。② <b>虚线箭头＝同尺度 skip feature，在通道维拼接</b>（不是逐元素相加），
+                拼接处通道先变成上面的 cat 值 <b>2560 / 1920 / 960</b>，再由该级第一个 <code>ResnetBlock2D</code> 的
+                <code>conv_shortcut</code> 投回本级宽度。③ 时间步 <code>t</code> 走 time embedding、以 scale/shift 注入每个 Resnet block；
+                文本条件 <code>c_text</code> 只在含 cross-attn 的 <code>Transformer2DModel</code> 里被当作 K/V 读取，两条入口不能互换。
+                <b>同步核对 checkpoint（读 SDXL 的 U-Net 权重可直接验证）：</b>3 级 down / 3 级 up、通道
+                <code>[320,640,1280]</code>（up 侧 1280 → 640 → 320）、<code>cross_attention_dim = 2048</code>（CLIP-L 768 与 CLIP-G 1280 拼接后）、
+                <code>layers_per_block = 2</code>（所以 down 每级 2 个 Resnet、up 每级 3 个 Resnet）、<b>第 1 个 down stage 完全没有注意力</b>
+                （SDXL 的 <code>down_block_types = [DownBlock2D, CrossAttnDownBlock2D, CrossAttnDownBlock2D]</code>）、
+                attention 内部 <code>BasicTransformerBlock</code> 的个数是 <b>2</b>（640 级）与 <b>10</b>（1280 级与 mid）。
+                <b>SD 1.5 不一样</b>：它是 <b>4 级 down / 4 级 up</b>、通道 <code>[320,640,1280,1280]</code>、
+                <b>3 个 downsampler</b>（所以 Mid 在 h/8×w/8）、<code>cross_attention_dim = 768</code>（只有 CLIP-L，也没有 pooled 条件），
+                而且<b>第 1 级就有 cross-attn</b>。这些数字都能从 <code>unet/config.json</code> 或权重里直接读到。
+              </p>
+            </div>
+            <p>
+              <strong>用在哪里：</strong>SD 1.5 / SD 2.x / SDXL 这一条 U-Net latent diffusion
+              路线，以及沿用同一骨架的修复、图生图、ControlNet、LoRA 与各类社区微调模型。它每次前向只预测一次
+              <code>eps</code> 或 <code>v</code>，形状与输入 <code>z_t</code> 完全一致，随后交给
+              scheduler 更新 latent——所以这张图是「一步」的完整结构，采样循环是把整个框反复跑
+              <code>steps</code> 次。
+            </p>
+            <h4>12.2 SDXL U-Net 内部的“层”</h4>
+            <p>
+              每个 down/up stage 由若干 ResNet
+              block、空间注意力和下采样/上采样组成。ResNet block 通常是归一化 →
+              SiLU → 3×3 卷积，再接时间 embedding
+              的线性投影并加到特征，随后第二个归一化/激活/卷积和残差相加。Cross-attention
+              把图像 latent 展平为 query，把文本 embedding 投影为
+              key/value；因此文本不是在每层重新 token 化，而是通过 K/V
+              调制视觉特征。U-Net 的 skip feature 让高分辨率局部细节回流到 up
+              path。
+            </p>
+            <div class="detail-entry">
+              <a href="image-models.html">先看图像公共模块详页 →</a
+              ><span>包含 VAE、条件、采样和通用任务接口</span
+              ><a href="image-dit.html">再看 SD3/MMDiT 逐模块结构 →</a
+              ><span>双流、联合 attention、输出头和 LoRA</span>
+            </div>
+            <p>
+              <strong>模型特色预告：</strong>SD3
+              把文本流和图像流分别投影后进行多模态联合 attention；FLUX
+              常见结构是先处理 image/text 双流、再进入单流 blocks；Qwen-Image
+              使用自己的多模态 Transformer 与图像/编辑条件路径。它们共享“latent
+              → token → Transformer → patch
+              更新”的接口，但不共享层数、文本编码器、参数名或训练目标。请分别进入
+              <a href="image-dit.html">SD3 详情</a>、<a href="image-flux.html"
+                >FLUX 详情</a
+              >、<a href="image-qwen.html">Qwen-Image 详情</a
+              >，不要把这里的共同骨架当成三者的完整实现。
+            </p>
+            <h3 id="atlas-dit">13. DiT / MMDiT 整机：不是一个神秘模型名</h3>
+            <p>
+              <strong>DiT</strong> 是 Diffusion Transformer 的缩写，意思是“用
+              Transformer 作为扩散/流生成的主干”。它不是 VAE，也不是
+              scheduler：VAE 负责像素↔latent，DiT 负责在带噪 latent
+              上预测更新，scheduler/solver 负责根据预测值推进时间步。图像 latent
+              被 patchify 成 token 后，DiT block
+              通常包含归一化、attention、条件调制、MLP 和残差连接；MLP
+              的“升维—非线性—降维”逻辑与上一部 LLM 的 MLP
+              相同，但具体激活和条件注入可能不同。
+            </p>
+            <div class="arch-diagram">
+              <div class="arch-title">一个 DiT block 的通用输入输出</div>
+              <div class="flow wide">
+                <div class="node">图像 tokens<br />[B,N,D]</div>
+                <b class="arrow">→</b>
+                <div class="node alt">Norm / AdaLN<br />时间条件调制</div>
+                <b class="arrow">→</b>
+                <div class="node">
+                  Self / Joint Attention<br />Q,K,V → context [B,N,D]
+                </div>
+                <b class="arrow">→ 残差</b>
+                <div class="node alt">Norm → MLP<br />[B,N,D]→[B,N,D]</div>
+                <b class="arrow">→ 残差</b>
+                <div class="node output">下一 block<br />[B,N,D]</div>
+              </div>
+              <figcaption>
+                图 IMG-03 · DiT 的内部输出通常保持
+                [B,N,D]，最后才用输出头变回每个 latent patch 的数值。
+              </figcaption>
+            </div>
+            <h4>13.1 张量级整机图（SD3.5-large MMDiT）</h4>
+            <p>
+              DiT 这一条路线把 U-Net 的卷积骨架整个换掉：不再保留二维网格，而是先把 latent
+              <strong>patchify</strong> 成 token 序列，之后全部在序列上做 Transformer。以 SD3.5-large 为例，latent 是
+              16 通道，<code>patchify 2×2</code> 把每个位置的 16×2×2 = 64 个数展平成一个 token，再做
+              <code>Linear(64→D)</code> 加上位置编码，得到 <code>[B,N,D]</code>，其中
+              <code>N = (h/2)(w/2)</code>。主干是 <code>N_layers</code> 层同构 block：SD3.5-large 是
+              <b>38 层、D=2432（38 head × head_dim 64 = 2432）</b>。
+            </p>
+            <p>
+              MMDiT 的关键在 block 内部：图像流与文本流<strong>各自保留一套投影和 FFN</strong>（double-stream），
+              但在计算注意力时把两条流的 Q、K、V 沿<strong>序列维</strong>拼在一起，只做<strong>一次</strong>
+              joint attention，算完再拆回两条流。它并不是把两个各自独立的网络拼起来——文本 token
+              始终和图像 token 在同一条序列里参与注意力，只是不进最终的输出头。
+            </p>
+            <div class="gn-frame">
+              <div class="gn-frame-head">
+                <div>
+                  <strong>完整结构 · MMDiT 整机（SD3.5-large，张量级）</strong>
+                  <small
+                    >虚线框内是一个完整主干：latent 网格 → patchify 成 token → Linear 加位置编码 →
+                    <code>JointTransformerBlock</code> ×38 → final AdaLN 调制 → unpatchify
+                    还原网格。下方并排给出 FLUX 与 Qwen-Image 的单流对照。</small
+                  >
+                </div>
+                <span class="gn-badge">虚线框内＝一个完整结构</span>
+              </div>
+              <pre class="mermaid-lite" data-ml-label="MMDiT 整机完整结构（张量级）">
+flowchart TD
+  z["输入 latent z_t<br/>[B,16,h,w]<br/>（SD3.5-large 是 16 通道）"]:::in --> pf["patchify 2×2<br/>每块 16·2·2 = 64 个数<br/>[B,N,64]，N = (h/2)(w/2)"]:::latent
+  txt["文本条件流 1<br/>CLIP-L 768 与 CLIP-G 1280 → [B,77,2048]<br/>（SD3.5-large 是 77 个 token）"]:::cond
+  tt5["文本条件流 2<br/>T5-XXL 4096 → context_embedder<br/>[B,N_txt,4096] → [B,N_txt,D]"]:::cond
+  pf --> lin["Linear(64→D) + 位置编码<br/>[B,N,D]<br/>SD3.5-large：D = 38 × 64 = 2432"]:::core
+  lin --> blk["JointTransformerBlock ×38<br/>AdaLN 调制 → 双流各自 QKV → concat(seq)<br/>一次 joint attention → 拆回 → 各自 FFN + 残差<br/>image [B,N,D] ｜ text [B,N_txt,D]"]:::attn
+  txt -.->|"作为 K / V"| blk
+  tt5 -.-> blk
+  blk --> mod["final AdaLN 调制（t 与 pooled）<br/>→ LayerNorm → Linear(D→64)<br/>[B,N,64]"]:::out
+  mod --> unp["unpatchify 2×2<br/>预测 velocity [B,16,h,w]<br/>再交给 solver 更新 z"]:::out
+  z --> v0["同一张 latent<br/>[B,16,h,w]<br/>下面两条是结构对照，不在主链上"]:::in
+  v0 --> v1["FLUX double-stream<br/>image 与 text 各自一套 QKV / FFN / 残差<br/>[B,N,D] ｜ [B,N_txt,D]"]:::core
+  v1 --> v2["FLUX single-stream<br/>concat 后走同一套权重<br/>text 不再有独立 FFN<br/>[B,N+N_txt,D]"]:::core
+  v0 --> q0["Qwen-Image<br/>纯 single-stream + RoPE<br/>[B,N+N_txt,D]"]:::core
+              </pre>
+              <div class="gn-legend">
+                <span><i></i>计算层（PatchEmbed / block / 输出头）</span>
+                <span><i class="gn-dash"></i>虚线箭头＝条件被当作 K/V 读取</span>
+                <span><i class="gn-solid"></i>实线箭头＝主数据流与结构对照</span>
+              </div>
+              <p class="gn-note">
+                <b>读图要点：</b>① <b>DiT 不是 VAE、也不是 sampler，它只是主干</b>——像素↔latent 是 VAE 的职责，
+                按预测值推进时间步是 scheduler / solver 的职责，这张框里只有「一片 latent 进、一片预测出」；
+                ② 主链自上而下是唯一的数据流，最下面从「同一张 latent」分出的 FLUX / Qwen-Image
+                两条只是<strong>结构对照</strong>，不参与本次预测；③ FLUX 是 double-stream 若干层之后接 single-stream，Qwen-Image 干脆全程只做单流 + RoPE，
+                它们和 MMDiT 的差别就在「两套权重还是同一套权重」。
+                <b>必须按 checkpoint 读的数字：</b>in / out 通道（SD3.5-large 是 16，SDXL 是 4）、
+                patch 大小（SD3 与 SD3.5 都是 2×2，但这不是通例）、层数、宽度 <code>D</code>、head 数、
+                以及文本编码器的组合与 token 数——换个 checkpoint
+                这些都会变，宁可现场读 <code>transformer/config.json</code>，不要凭记忆写。
+              </p>
+            </div>
+            <p>
+              <strong>用在哪里：</strong>SD3 / SD3.5、FLUX、Qwen-Image 等图像主干，以及把 tubelet
+              换成 3D patch 之后的视频 DiT（H3 这类单流主干也用同一套「patch 化 → 序列 block → unpatchify」接口）。
+              判断一个 checkpoint 属于哪一类，看它有没有 <code>Transformer2DModel</code>（U-Net）还是
+              <code>JointTransformerBlock</code> / <code>x_embedder</code>（DiT / MMDiT）就够了。
+            </p>
+            <h4 id="atlas-single-stream">13.2 单流主干（single-stream + AdaLN + MM-RoPE）</h4>
+            <p>
+              视频、音频、文本条件被拼成一条 <strong>packed 序列</strong>
+              后，主干可以用<strong>同一套</strong>
+              attention 与 FFN 处理所有模态，模态差异只放在输入/输出层和
+              AdaLN 分支上。这就是 H3 所说“33B dense single-stream，约
+              13B 参数在 AdaLN 分支”（官方 33B 原版权重的口径；本地剪枝 repack 的这个数字小三个数量级，
+              下面是核验结果）的结构含义：AdaLN
+              的调制量可以由条件预先算好并缓存，因此只做推理时不必加载这部分参数。下面这张图先给通用形态，具体数字用
+              H3 checkpoint 核验结果标在注释里。
+            </p>
+            <div class="gn-frame">
+              <div class="gn-frame-head">
+                <div>
+                  <strong>完整结构 · 单流主干的一个 block（重复 N 层）</strong>
+                  <small
+                    >虚线框内是一个完整网络：packed 序列 → AdaLN 调制 →
+                    联合注意力 → 残差 → FFN → 残差 → 按 token 边界拆回各模态。</small
+                  >
+                </div>
+                <span class="gn-badge">虚线框内＝一个完整结构</span>
+              </div>
+              <pre class="mermaid-lite" data-ml-label="单流主干 block 完整结构">
+flowchart TD
+  x["packed 序列 x [B,N_total,D]<br/>条件 token + 视频 token + 音频 token"]:::in --> norm["AdaLN：模态专属分支产生 scale / shift / gate<br/>x_n = x ⊙ (1 + scale) + shift"]:::norm
+  norm --> qkv["Q/K/V 线性投影<br/>[B,heads,N_total,d_head]"]:::core
+  qkv --> qknorm["可选 QK-Norm：对 Q/K 做归一化<br/>（H3：q_norm / k_norm 各 128 维）"]:::op
+  qknorm --> rope["MM-RoPE (t,h,w)：三维位置作用于 Q/K"]:::op
+  rope --> attn["joint attention：所有 token 共享 K/V<br/>softmax(QKᵀ/√d_head)·V"]:::attn
+  attn --> res1["输出投影 → residual add<br/>x₁ = x + Attn(x_n)"]:::core
+  res1 --> ffn["FFN（共享）：升维 → 激活 → 降维<br/>逐 token 变换，不混合位置"]:::core
+  ffn --> res2["gate 缩放 + residual add<br/>x₂ = x₁ + gate ⊙ FFN(x₁)"]:::out
+  res2 --> repeat["该 block 输出 [B,N_total,D]<br/>重复 N_layers 次"]:::core
+  repeat --> split["按 token 边界 split(seq)"]:::op
+  split --> vhead["视频输出头<br/>video update [B,N_v,*]"]:::out
+  split --> ahead["音频输出头<br/>audio update [B,N_a,*]"]:::out
+              </pre>
+              <p class="gn-note">
+                <b>哪些是官方事实、哪些已被 checkpoint 核验、哪些仍是通用写法：</b>
+                官方明确 single-stream、AdaLN 分支约占 13B
+                参数、位置编码是 <code>MM-RoPE (t,h,w)</code>、attention 与 FFN
+                都不含模态专属结构。读 H3 的 ComfyUI repack 后又确认了一批具体数字：<b>50 层</b>、hidden
+                <b>5376</b>、<b>56 head × head_dim 128</b>、融合投影
+                <code>qkv_proj 21504×5376</code>（= 3×7168）+ <code>out_proj 5376×7168</code>、带
+                <code>q_norm</code>/<code>k_norm</code>、FFN 是 <b>SwiGLU</b>（<code>fc1</code> 28672×5376
+                = gate + up = 2×14336，<code>fc2</code> 5376×14336）、每层一个
+                <code>adaln_proj 96768×8</code>，输入是共享的
+                <code>adaln_t_table</code>（1025×8）——也就是官方所说“调制量可预计算缓存”的具体形态。要注意：这份剪枝版里
+                AdaLN 相关只有约 <b>43.65M</b>（0.22%），和官方“约 13B 在 AdaLN
+                分支”不是同一份权重，引用时要分开写。仍然属于“通用写法、需按 checkpoint
+                核对”的是：gate 的精确形式、18 组调制向量如何分配给各子层，以及其它模型（Wan
+                / CogVideoX 等）的层数与宽度。
+              </p>
+            </div>
+
+            <h3 id="atlas-image-vae">14. 图像 VAE（2D AutoencoderKL，latent 4 通道或 16 通道）</h4>
+            <p>
+              图像侧的 VAE 是“结构公开但详情页通常不展开”的通用模块：它的配置在
+              checkpoint 里能直接读到（例如 SDXL 的
+              <code>block_out_channels=[128,256,512,512]</code>、<code>layers_per_block=2</code>、<code>latent_channels=4</code>、<code>scaling_factor=0.13025</code>），所以这里给的是<strong>带具体数字的完整结构</strong>，而不是“未公开的示意”。
+            </p>
+            <div class="gn-frame">
+              <div class="gn-frame-head">
+                <div>
+                  <strong>完整结构 · 图像 VAE（AutoencoderKL）</strong>
+                  <small
+                    >虚线框内是一个完整网络：RGB → 3 次下采样的编码器 → 最低分辨率的
+                    attention → μ/σ 采样 → 4 级上采样解码器 → RGB，并标出同尺度
+                    skip。</small
+                  >
+                </div>
+                <span class="gn-badge">虚线框内＝一个完整结构</span>
+              </div>
+              <pre class="mermaid-lite" data-ml-label="图像 VAE 完整结构">
+flowchart TD
+  x["RGB 图像 x<br/>[B,3,H,W]"]:::in --> cin["conv_in（3→128, 3×3）<br/>[B,128,H,W]"]:::core
+  cin --> e1["Encoder Down1：2×ResnetBlock2D<br/>+ Downsample2D<br/>[B,128,H/2,W/2]"]:::core
+  e1 --> e2["Encoder Down2：2×ResnetBlock2D<br/>+ Downsample2D<br/>[B,256,H/4,W/4]"]:::core
+  e2 --> e3["Encoder Down3：2×ResnetBlock2D<br/>+ Downsample2D<br/>[B,512,H/8,W/8]"]:::core
+  e3 --> e4["Encoder Down4：2×ResnetBlock2D（不再下采样）<br/>[B,512,H/8,W/8]"]:::core
+  e4 --> mid["Mid block：ResnetBlock2D<br/>+ Self-Attention + ResnetBlock2D<br/>[B,512,H/8,W/8]"]:::attn
+  mid --> cout["conv_norm_out + SiLU + conv_out（512→2C）<br/>+ quant_conv（1×1 卷积）"]:::core
+  cout --> head["μ, logσ² [B,4,H/8,W/8]"]:::out
+  head --> sample["z = μ + σ ⊙ ε，再乘 scaling_factor<br/>（SDXL：0.13025）→ z' 交给主干"]:::op
+  sample --> pack["按主干取用：U-Net 直接用 [B,4,H/8,W/8]<br/>DiT 类：2×2 pack → [B,N,4·p²] token"]:::latent
+  sample --> unscale["解码前先除回去：z = z' / scaling_factor<br/>（漏掉这一步是最常见的复现 bug）"]:::warn
+  unscale --> dec["Decoder：post_quant_conv → conv_in<br/>Mid block → 4×（Upsample2D + 3×ResnetBlock2D）<br/>每级拼接同尺度 skip"]:::core
+  dec --> dout["conv_norm_out + SiLU + conv_out（128→3）→ tanh<br/>[B,3,H,W]"]:::out
+  e3 -.->|skip| dec
+  e2 -.->|skip| dec
+  e1 -.->|skip| dec
+              </pre>
+              <p class="gn-note">
+                <b>为什么解码器每级是 3 个 ResnetBlock：</b>
+                编码器每级输出 2 个 ResnetBlock 的结果，解码器要在同一级把
+                <code>torch.cat([up_feature, skip], dim=1)</code>
+                的通道接回来后继续算，所以 Diffusers 的 <code>UpDecoderBlock2D</code>
+                默认是 <code>layers_per_block + 1 = 3</code> 个
+                ResnetBlock。这里的“3”是结构性的，不是随手写的数字。
+              </p>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>阶段</th>
+                    <th>输入形状</th>
+                    <th>输出形状</th>
+                    <th>说明</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>conv_in</td>
+                    <td><code>[B,3,H,W]</code></td>
+                    <td><code>[B,128,H,W]</code></td>
+                    <td>3×3 卷积，不做归一化</td>
+                  </tr>
+                  <tr>
+                    <td>Down1 / Down2 / Down3</td>
+                    <td>上一级 feature</td>
+                    <td><code>[B,128,H/2,W/2]</code> → <code>[B,256,H/4,W/4]</code> → <code>[B,512,H/8,W/8]</code></td>
+                    <td>每级 2×ResnetBlock2D，级间 <code>Downsample2D</code>（stride 2 卷积）</td>
+                  </tr>
+                  <tr>
+                    <td>Down4</td>
+                    <td><code>[B,512,H/8,W/8]</code></td>
+                    <td>同形状</td>
+                    <td>只加深，不再降分辨率；同尺度 skip 在此保存</td>
+                  </tr>
+                  <tr>
+                    <td>Mid block</td>
+                    <td><code>[B,512,H/8,W/8]</code></td>
+                    <td>同形状</td>
+                    <td>Resnet → Self-Attention → Resnet：在 1/8 分辨率做全局空间混合</td>
+                  </tr>
+                  <tr>
+                    <td>输出头 + quant_conv</td>
+                    <td><code>[B,512,H/8,W/8]</code></td>
+                    <td><code>μ, logσ² [B,4,H/8,W/8]</code></td>
+                    <td>通道翻倍后拆成均值和方差；1×1 卷积只改通道</td>
+                  </tr>
+                  <tr>
+                    <td>采样</td>
+                    <td><code>μ, σ</code></td>
+                    <td><code>z [B,4,H/8,W/8]</code></td>
+                    <td>训练采样、推理取均值；再<b>乘</b>该 checkpoint 的 <code>scaling_factor</code></td>
+                  </tr>
+                  <tr>
+                    <td>Decoder 前</td>
+                    <td><code>z'</code></td>
+                    <td><code>z'/scaling_factor</code></td>
+                    <td><b>先除回去</b>再 <code>vae.decode</code>：Diffusers 里就是 <code>latents / vae.config.scaling_factor</code></td>
+                  </tr>
+                  <tr>
+                    <td>Decoder</td>
+                    <td><code>z</code></td>
+                    <td><code>[B,128,H,W]</code></td>
+                    <td>post_quant_conv → conv_in → Mid → 4 级上采样，每级拼同尺度 skip</td>
+                  </tr>
+                  <tr>
+                    <td>conv_out</td>
+                    <td><code>[B,128,H,W]</code></td>
+                    <td><code>[B,3,H,W]</code></td>
+                    <td>tanh 输出回像素域</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>项目</th>
+                    <th>通用参考实现</th>
+                    <th>必须按 checkpoint 读取</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>空间压缩倍数</td>
+                    <td>3 次 <code>Downsample2D</code>，合计 8×</td>
+                    <td>SDXL / SD3 / FLUX / Qwen-Image 都是 8×，但仍应核对 config</td>
+                  </tr>
+                  <tr>
+                    <td>latent 通道</td>
+                    <td>输出头给 <code>2C</code>，取 <code>C</code></td>
+                    <td><b>SDXL 是 4</b>；SD3 / FLUX / Qwen-Image 是 16</td>
+                  </tr>
+                  <tr>
+                    <td>scaling factor</td>
+                    <td>采样后逐元素相乘，解码前逐元素相除</td>
+                    <td>SDXL 为 0.13025：必须读 <code>vae/config.json</code></td>
+                  </tr>
+                  <tr>
+                    <td>通道数 / 每级 block 数 / 是否有 attention</td>
+                    <td>按通用 AutoencoderKL 写法</td>
+                    <td><code>block_out_channels</code>、<code>layers_per_block</code>、<code>norm_num_groups</code></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              <strong>scaling factor 到底在做什么：</strong>扩散/流主干的加噪公式默认输入是「大约零均值、单位方差」的数据（DDPM
+              推导里 <code>x₀ ~ N(0, I)</code> 这个假设），而 VAE 编出来的 latent
+              各通道标准差并不等于 1——SDXL 的 latent 标准差明显小于 1，直接加噪会让信号淹没在噪声里。训练者因此约定一个常数把
+              latent 的标准差拉到 ≈1：<code>z' = z × scaling_factor</code>，主干与 scheduler
+              只见到 <code>z'</code>。这个常数是<strong>训练时定好的接口</strong>，不是可以随便调的超参：用错值（或忘了乘）会表现为「图糊、鬼影、颜色偏移」，而且换个
+              checkpoint（例如 SD3 的 16 通道 VAE，其 <code>scaling_factor</code> 与 SDXL 不同）必须重新读
+              <code>vae/config.json</code>。
+              <strong>解码时必须除回去</strong>：真实流程是 <code>latents / vae.config.scaling_factor</code>
+              之后再 <code>vae.decode</code>；只做乘法不做除法是最常见的复现 bug。新一点的实现还有
+              <code>shift_factor</code>（先减一个偏移再缩放，SD3 的 VAE 就带
+              <code>shift_factor=0.0609</code>），规则一样：进主干前缩放、出主干回像素前反变换。
+            </p>
+
+            <h3 id="atlas-video-vae">15. 时间因果视频 VAE（3D causal VAE，f16t4d24 一类）</h4>
+            <p>
+              <strong>“时间因果”</strong>指时间维的卷积和注意力<strong
+                >只能看当前帧与过去帧</strong
+              >：<code>CausalConv3d</code> 只在时间轴左侧补零，时间下采样时第一帧单独处理（复制或走独立分支），因此
+              <code>z_t</code> 不依赖 <code>z_{t+1}</code>。这样解码可以逐段流式进行，训练时也不会用到未来帧。下面这张图就是这类
+              VAE 的完整通用结构：编码器、latent、解码器全部画在同一个虚线框里。
+            </p>
+            <div class="gn-frame">
+              <div class="gn-frame-head">
+                <div>
+                  <strong>完整结构 · 时间因果视频 VAE（3D causal VAE）</strong>
+                  <small
+                    >虚线框内是一个完整网络：像素 → 时间因果编码器 →
+                    latent（μ/σ 采样）→ 时间因果解码器 →
+                    像素。框内每层都标了张量形状。</small
+                  >
+                </div>
+                <span class="gn-badge">虚线框内＝一个完整结构</span>
+              </div>
+              <pre class="mermaid-lite" data-ml-label="时间因果视频 VAE 完整结构">
+flowchart TD
+  x["视频帧 x<br/>[B,3,T,H,W]"]:::in --> stem["CausalConv3d stem（k=3, s=1, p=(1,1,1)）<br/>[B,64,T,H,W]"]:::core
+  stem --> d1["DownStage 1：2×ResBlock3D<br/>temporal stride 1 / spatial stride 2<br/>[B,128,T,H/2,W/2]"]:::core
+  d1 --> d2["DownStage 2：2×ResBlock3D<br/>temporal stride 2 / spatial stride 2<br/>[B,256,T/2,H/4,W/4]"]:::core
+  d2 --> d3["DownStage 3：2×ResBlock3D<br/>temporal stride 2 / spatial stride 2<br/>[B,512,T/4,H/8,W/8]"]:::core
+  d3 --> d4["DownStage 4：2×ResBlock3D<br/>spatial stride 2<br/>[B,512,T/4,H/16,W/16]"]:::core
+  d4 --> mid["MidBlock：ResBlock3D<br/>+ SpatialAttention + TemporalAttention<br/>[B,512,T/4,H/16,W/16]"]:::attn
+  mid --> head["输出头：GroupNorm + SiLU + CausalConv3d(3→48)<br/>μ, logσ² [B,24,T/4,H/16,W/16]"]:::out
+  head --> sample["重参数化采样 z = μ + σ ⊙ ε<br/>[B,24,T/4,H/16,W/16]"]:::op
+  sample --> patch["patch 1×2×2 → token<br/>[B,(T/4)(H/32)(W/32),96] → Linear(D_model)"]:::latent
+  sample --> up["解码器（对称）：时间/空间上采样 + ResBlock3D<br/>[B,512,T/4,H/16,W/16] → [B,64,T,H,W]"]:::core
+  up --> dec["输出头：CausalConv3d(64→3) → RGB<br/>[B,3,T,H,W]"]:::out
+  d3 -.->|skip| up
+  d2 -.->|skip| up
+              </pre>
+              <div class="gn-legend">
+                <span><i></i>计算层（卷积 / ResBlock / 注意力）</span>
+                <span><i class="gn-dash"></i>虚线箭头＝同尺度 skip feature（通道维拼接）</span>
+                <span><i class="gn-solid"></i>实线箭头＝主数据流</span>
+              </div>
+              <p class="gn-note">
+                <b>通用实现与 checkpoint 事实分开看：</b
+                >虚线框里的层数、kernel、归一化和注意力位置属于这类 VAE
+                的通用参考实现（Wan / CogVideoX / HunyuanVideo / H3
+                等“时间因果 3D VAE”都能对号入座）；<b>16× 空间、4× 时间、24
+                通道 latent、1×2×2 patch 是 H3 官方公开的事实</b
+                >。<b>再补一条 checkpoint 核验：</b>H3-VisualVAE
+                的真实结构比上面这张通用图更简单——编码器是 <b>6 级</b> 3D 因果卷积（每级 2 个
+                ResBlock3D、其中 <b>4 级带 downsampler</b>，通道
+                128→256→512→512→1024），<code>conv_out</code> 输出 <b>48</b> 通道（= 2×24：μ 与
+                logσ²），并有 <code>latents_mean</code>/<code>latents_std</code> 各 24
+                个做逐通道缩放；<b>解码器不是卷积，而是 36 层 ViT</b>（宽 2048、门控
+                FF 8192、4 个 register token），<code>proj_out</code> 输出 3072 = 3×4×16×16，也就是每个
+                latent 位置直接展开成 (4 帧, 16×16) 像素块——<b
+                  >所以它没有 U-Net 式 skip</b
+                >。上面通用图里的 MidBlock 注意力与 skip 连线属于别的实现（例如 Wan /
+                CogVideoX），H3 这条不适用。其它模型的数字仍必须读各自的 VAE config。
+              </p>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>阶段</th>
+                    <th>这一层做什么</th>
+                    <th>输入形状</th>
+                    <th>输出形状</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>stem</td>
+                    <td>
+                      <code>CausalConv3d</code>（时间左侧补零）只提特征，时间因果
+                    </td>
+                    <td><code>[B,3,T,H,W]</code></td>
+                    <td><code>[B,64,T,H,W]</code></td>
+                  </tr>
+                  <tr>
+                    <td>Down 1</td>
+                    <td>2×<code>ResBlock3D</code>（GroupNorm + SiLU + 3×3×3 卷积 + 残差）</td>
+                    <td><code>[B,64,T,H,W]</code></td>
+                    <td><code>[B,128,T,H/2,W/2]</code></td>
+                  </tr>
+                  <tr>
+                    <td>Down 2</td>
+                    <td>2×<code>ResBlock3D</code> + 时间/空间各 2× 下采样</td>
+                    <td><code>[B,128,T,H/2,W/2]</code></td>
+                    <td><code>[B,256,T/2,H/4,W/4]</code></td>
+                  </tr>
+                  <tr>
+                    <td>Down 3</td>
+                    <td>2×<code>ResBlock3D</code> + 时间/空间各 2× 下采样</td>
+                    <td><code>[B,256,T/2,H/4,W/4]</code></td>
+                    <td><code>[B,512,T/4,H/8,W/8]</code></td>
+                  </tr>
+                  <tr>
+                    <td>Down 4</td>
+                    <td>2×<code>ResBlock3D</code> + 空间 2×（时间不再下采样）</td>
+                    <td><code>[B,512,T/4,H/8,W/8]</code></td>
+                    <td><code>[B,512,T/4,H/16,W/16]</code></td>
+                  </tr>
+                  <tr>
+                    <td>Mid</td>
+                    <td>
+                      <code>ResBlock3D</code> +
+                      <code>SpatialAttention</code> +
+                      <code>TemporalAttention</code>：在最低分辨率做全局时空混合
+                    </td>
+                    <td><code>[B,512,T/4,H/16,W/16]</code></td>
+                    <td>同上（形状不变）</td>
+                  </tr>
+                  <tr>
+                    <td>输出头</td>
+                    <td>
+                      <code>GroupNorm</code> → <code>SiLU</code> →
+                      <code>CausalConv3d(3→2C)</code>，一次给出均值与对数方差
+                    </td>
+                    <td><code>[B,512,T/4,H/16,W/16]</code></td>
+                    <td>
+                      <code>μ, logσ² [B,24,T/4,H/16,W/16]</code>（<code>C=24</code>）
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>采样</td>
+                    <td>
+                      <code>z = μ + σ ⊙ ε</code>：训练时采样，推理时直接取
+                      <code>μ</code>
+                    </td>
+                    <td><code>μ, σ</code></td>
+                    <td><code>[B,24,T/4,H/16,W/16]</code></td>
+                  </tr>
+                  <tr>
+                    <td>解码器</td>
+                    <td>与编码器镜像：上采样 + <code>ResBlock3D</code>，逐级取同尺度 skip</td>
+                    <td><code>[B,512,T/4,H/16,W/16]</code></td>
+                    <td><code>[B,64,T,H,W]</code></td>
+                  </tr>
+                  <tr>
+                    <td>输出</td>
+                    <td><code>CausalConv3d(64→3)</code>：回到像素域</td>
+                    <td><code>[B,64,T,H,W]</code></td>
+                    <td><code>[B,3,T,H,W]</code></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="tensor-example">
+              <b>具体数字：时间压缩率决定 token 数，空间压缩率决定 patch 数</b>
+              <p>
+                取 <code>T=121</code>、<code>H=480</code>、<code>W=832</code>、24
+                FPS（约 5 秒）：时间压缩 4× 后 <code>T/4=31</code>，空间压缩 16×
+                后 <code>H/16=30</code>、<code>W/16=52</code>，latent 为
+                <code>[B,24,31,30,52]</code>。再按 <code>1×2×2</code> patch
+                化，token 数为 <code>31×15×26=12090</code>，每个 token 携带
+                <code>24×1×2×2=96</code> 个数，正好对应“进 Transformer
+                前有效空间下采样 32×、时间仍是 4×”。
+              </p>
+            </div>
+            <p>
+              还有一个常见变体：<strong>ViT 解码器</strong>。它把 latent 当作
+              token 序列而不是特征图，形状链是
+              <code
+                >z [B,24,T′,H′,W′] → patchify(p) → [B,N,24p³] →
+                Linear(D_vit) → ViT block ×L → Linear(C·p³) → pixelshuffle →
+                RGB</code
+              >。换成 attention 解码可以减少高分辨率下的卷积解码成本，但时间因果性要靠分块、窗口或逐段解码来保证。哪一种解码器被真正使用，只能读
+              checkpoint 的 VAE 代码，不能从“时间因果 VAE”这个名字推断。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>项目</th>
+                    <th>通用参考实现（虚线框内）</th>
+                    <th>必须以 checkpoint 为准的部分</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>空间压缩</td>
+                    <td>4 次空间 stride 2，合计 16×</td>
+                    <td>H3 官方公开为 f16t4d24 的 16×</td>
+                  </tr>
+                  <tr>
+                    <td>时间压缩</td>
+                    <td>2 次时间 stride 2，合计 4×</td>
+                    <td>H3 官方公开为 4×（时间因果，第一帧特殊处理）</td>
+                  </tr>
+                  <tr>
+                    <td>latent 通道</td>
+                    <td>输出头给出 <code>2C</code>，取 <code>C=24</code></td>
+                    <td>H3 官方公开为 24 通道</td>
+                  </tr>
+                  <tr>
+                    <td>解码器</td>
+                    <td>与编码器对称的反卷积解码</td>
+                    <td>官方只说“编码器训练后另有 ViT 解码器”，没给层数；<b>checkpoint 核验值</b>（社区 repack）是 36 层 ViT、宽 2048、门控 FF 8192、4 个 register token、<code>proj_out</code> 3072（见本节上方虚线框）</td>
+                  </tr>
+                  <tr>
+                    <td>层数 / kernel / 归一化 / 注意力位置</td>
+                    <td>按通用 3D causal VAE 写法</td>
+                    <td>官方未公开；<b>checkpoint 核验值</b>：编码器 6 级 3D 因果卷积（4 级带 downsampler，通道 128→256→512→512→1024）、<code>conv_out</code> 48 = 2×24。其它版本或别的模型仍必须读各自的 VAE config</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <h3 id="atlas-audio-vae">16. 音频 VAE（立体声 waveform VAE，latent 时间率 40 Hz 一类）</h4>
+            <p>
+              音频 VAE 的结构和视频 VAE
+              同源，只是把空间卷积换成波形上的一维因果卷积：波形
+              <code>[B,2,S]</code> 先在<strong>时间轴</strong>上逐级下采样，得到固定时间率的
+              latent，解码器再对称地把它还原成波形。所谓“每声道 40 Hz
+              latent”就是在说：总下采样倍数 = 采样率 ÷ latent 时间率 =
+              <code>32000/40 = 800</code>。
+            </p>
+            <div class="gn-frame">
+              <div class="gn-frame-head">
+                <div>
+                  <strong>完整结构 · 立体声音频 VAE（波形 ↔ latent）</strong>
+                  <small
+                    >虚线框内是一个完整网络：立体声波形 → 逐级因果下采样 →
+                    每声道 latent → 对称反卷积解码 → 立体声波形。</small
+                  >
+                </div>
+                <span class="gn-badge">虚线框内＝一个完整结构</span>
+              </div>
+              <pre class="mermaid-lite" data-ml-label="立体声音频 VAE 完整结构">
+flowchart TD
+  x["立体声波形 x<br/>[B,2,S] · 32 kHz"]:::in --> stem["CausalConv1d stem（k=7, p=3）<br/>[B,64,S]"]:::core
+  stem --> e1["Encoder1：3×ResidualUnit(d=1,3,9)<br/>+ CausalConv1d(stride 2)<br/>[B,128,S/2]"]:::core
+  e1 --> e2["Encoder2：3×ResidualUnit<br/>+ CausalConv1d(stride 4)<br/>[B,256,S/8]"]:::core
+  e2 --> e3["Encoder3：3×ResidualUnit<br/>+ CausalConv1d(stride 5)<br/>[B,512,S/40]"]:::core
+  e3 --> e4["Encoder4：3×ResidualUnit<br/>+ CausalConv1d(stride 5)<br/>[B,512,S/200]"]:::core
+  e4 --> e5["Encoder5：3×ResidualUnit<br/>+ CausalConv1d(stride 4)<br/>[B,512,S/800]"]:::core
+  e5 --> proj["输出投影 CausalConv1d(512→2C_a, k=3)<br/>[B,2C_a,40·秒] → split(channel)"]:::out
+  proj --> z["latent z_a = μ + σ ⊙ ε<br/>[B,2,C_a,40·秒]"]:::latent
+  z --> dec["Decoder：镜像结构<br/>CausalConvTranspose1d(stride 4,5,5,4,2)<br/>+ 3×ResidualUnit（左右声道共享权重）"]:::core
+  dec --> rec["输出 CausalConv1d + tanh<br/>[B,2,S] · 32 kHz 立体声"]:::out
+              </pre>
+              <p class="gn-note">
+                <b>左右声道怎么处理：</b
+                >把 batch 维展开成 <code>[B·2,1,S]</code>，两个声道分别过一次<b>同一套</b>
+                encoder / decoder 权重，再 stack 回 <code>[B,2,…]</code>；这不是两条独立网络。总下采样
+                <code>2×4×5×5×4=800</code> 对应 32 kHz → 40 Hz，这个倍数关系是可以直接核验的。
+                <b>再补一条 checkpoint 核验：</b>H3-AudioVAE 的真实结构是
+                <b>DAC 风格</b>——<code>conv_in</code> 是 <b>1→64</b>
+                k=7（确认了「每个声道单独进网络」），5 级下采样每级都是 3 个残差单元（Snake →
+                k=7 卷积 → Snake → k=1 卷积）+ 一个步长卷积，步长依次为 <b>2/4/4/5/5</b>（合计
+                800），通道 64→128→256→512→1024→2048，激活是带可学习
+                <code>alpha</code>/<code>beta</code> 的 SnakeBeta；<b>latent 是 32 通道</b>（<code>latents_mean/std</code>
+                各 32），不是上面通用图里未定的 <code>C_a</code>。解码器先经
+                <code>pre_block</code> 做一次注意力（<code>qkv</code> 6144×2048、带
+                <code>zero_k_bias</code>），再 <code>dec_in_proj</code> 2048×32×1 →
+                <code>conv_pre</code> → <b>7 级转置卷积</b>（1024→512→256→128→64→32→16→8）与
+                <b>21 个残差块</b>（每级 3 个），最后由带 <b>1×1×12 低通滤波</b>的
+                <code>activation_post</code> 抗镜像后输出单声道波形；整条约 151M 参数。
+                上面通用图里的 <code>ResidualUnit(d=1,3,9)</code>、通道 512 与
+                <code>2C_a</code> 输出投影属于别的实现（BigVGAN / EnCodec 风格），H3
+                这条对不上。
+              </p>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>阶段</th>
+                    <th>运算</th>
+                    <th>输出形状（32 kHz）</th>
+                    <th>时间率</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>输入</td>
+                    <td>立体声波形，按声道展开</td>
+                    <td><code>[B,2,S]</code>，<code>S=32000×时长</code></td>
+                    <td>32 kHz</td>
+                  </tr>
+                  <tr>
+                    <td>stem</td>
+                    <td>因果一维卷积提特征</td>
+                    <td><code>[B,64,S]</code></td>
+                    <td>32 kHz</td>
+                  </tr>
+                  <tr>
+                    <td>下采样 ×5</td>
+                    <td>ResidualUnit（膨胀卷积 1/3/9）+ 步长卷积</td>
+                    <td><code>[B,512,S/800]</code></td>
+                    <td>40 Hz</td>
+                  </tr>
+                  <tr>
+                    <td>latent</td>
+                    <td>输出投影 + 重参数化采样</td>
+                    <td><code>[B,2,C_a,40×时长]</code></td>
+                    <td>40 Hz</td>
+                  </tr>
+                  <tr>
+                    <td>解码</td>
+                    <td>对称反卷积 + ResidualUnit</td>
+                    <td><code>[B,2,S]</code></td>
+                    <td>32 kHz</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="tensor-example">
+              <b>为什么音频 token 数远多于视频 token 数</b>
+              <p>
+                15 秒音频：每声道 <code>40×15=600</code> 个 latent 时间位置；同样
+                15 秒视频按 24 FPS、时间压缩 4× 只有 <code>24×15/4=90</code>
+                个时间格。两者的 latent
+                <strong>时间率不同</strong>，所以“原生音画同步”不是把两条序列等长拼接就能得到，必须靠统一时间轴和位置编码（例如
+                <code>MM-RoPE</code> 的时间坐标）把两种时间率映射到同一参考系。
+              </p>
+            </div>
+
+            <h3 id="atlas-text-encoder">17. 文本编码器：CLIP text 与 T5 encoder 的完整 block</h4>
+            <p>
+              CLIP 和 T5 属于“结构完全公开、但详情页不会逐层展开”的通用模块。它们的完整
+              block 结构和上面的 DiT block 是同一套积木：归一化 → 注意力 →
+              残差 → 归一化 → MLP → 残差，区别只在归一化类型、是否有因果
+              mask、位置编码方式和输出怎么被使用。
+            </p>
+            <div class="gn-frame">
+              <div class="gn-frame-head">
+                <div>
+                  <strong>完整结构 · CLIP text encoder 与 T5 encoder</strong>
+                  <small
+                    >虚线框内是两个完整网络（两条独立链路）：左侧 CLIP 输出序列条件
+                    + pooled 条件；右侧 T5 只输出序列条件。</small
+                  >
+                </div>
+                <span class="gn-badge">虚线框内＝一个完整结构</span>
+              </div>
+              <pre class="mermaid-lite" data-ml-label="CLIP 与 T5 文本编码器完整结构">
+flowchart TD
+  c0["CLIP-L / CLIP-G：input_ids [B,77]"]:::in --> c1["token embedding + 位置 embedding<br/>[B,77,768] 或 [B,77,1280]"]:::core
+  c1 --> c2["CLIP encoder block ×12（CLIP-L）/ ×32（CLIP-G）<br/>LayerNorm → 因果 self-attention → residual<br/>LayerNorm → MLP(4×, GELU) → residual"]:::attn
+  c2 --> c3["final LayerNorm → last_hidden_state<br/>[B,77,768] 或 [B,77,1280]"]:::out
+  c3 --> c4["序列条件 concat(channel) → [B,77,2048]<br/>pooled：EOS 位置 → text_projection → [B,1280]"]:::latent
+  t0["T5-XXL：input_ids [B,≤512]"]:::in --> t1["token embedding<br/>[B,N_t5,4096]"]:::core
+  t1 --> t2["T5 encoder block ×24<br/>RMSNorm → self-attention（相对位置 bias，无因果 mask）→ residual<br/>RMSNorm → FFN(4096→10240→4096) → residual"]:::attn
+  t2 --> t3["final RMSNorm → [B,N_t5,4096]<br/>→ txt_in(Linear 4096→D)"]:::out
+              </pre>
+              <p class="gn-note">
+                <b>两条链路的差别只在三处：</b>
+                CLIP 用 LayerNorm + 因果 mask + 绝对位置 embedding，并额外提供一个
+                pooled 向量；T5 用 RMSNorm + 相对位置 bias +
+                无因果 mask（encoder-only），只提供序列。序列条件最终进
+                attention 的 K/V，pooled 条件进时间/AdaLN
+                的调制路径——这两个入口不能互换。
+              </p>
+              <p>
+                <strong>为什么有的模型要挂两个甚至三个文本编码器：</strong>不是堆料，而是三件事各缺一半。①
+                <strong>输入长度</strong>：CLIP 系列只接受 <b>77 个 token</b>，长 prompt
+                会被硬截断，T5-XXL 能吃到 512 个 token，所以 SD3 / FLUX
+                用它读完整句子（长描述、画面里的文字，都靠这条）。② <strong>语义容量</strong>：CLIP-L（768
+                维）容量小、对组合语义弱，SDXL 因此再加一个更大的 OpenCLIP-G（1280
+                维）并把两者沿通道拼成 2048 维，让主干一次看到两种粒度的表示。③
+                <strong>两种条件的用途不同</strong>：序列条件进 attention 的 K/V
+                负责「画什么」，pooled 向量进 AdaLN 的调制负责「整体风格与气质」——SDXL
+                额外喂的 <code>added_cond_kwargs</code>（pooled + 尺寸/裁剪参数）就是后者。代价是显存与延迟：编码器越多、越长，循环外的预计算越慢，所以
+                FLUX.1-schnell 这类少步模型会只保留 T5。
+              </p>
+            </div>
+
+            <h3 id="atlas-mm-encoder">18. 多模态条件编码器（ViT + projector + decoder-only LLM）</h4>
+            <p>
+              越来越多的模型不再用 CLIP/T5 编码文本，而是直接拿一个多模态大模型的隐藏层当条件：H3-Encoder
+              取的是 Qwen3-VL-32B 的<strong>第 50 层</strong>，Qwen-Image 用的是
+              Qwen2.5-VL。这类编码器本质上就是
+              <strong>视觉塔 + 投影器 + 语言模型堆叠</strong>，完整结构如下。
+            </p>
+            <div class="tensor-example">
+              <b>H3-Encoder 的 checkpoint 核验结果（可直接对上张量名）</b>
+              <p>
+                读 H3 专用 repack 的 safetensors 头部后确认：LLM 部分是
+                <code>model.layers.0–49</code> 共 <b>50 层</b>、hidden
+                <b>5120</b>、vocab <b>151936</b>；注意力是
+                <b>GQA 64:8</b>（<code>q_proj</code> 8192 = 64×128，<code>k_proj</code>/<code>v_proj</code>
+                各 1024 = 8×128），并带 <code>q_norm</code>/<code>k_norm</code>；FFN 是 SwiGLU（gate/up
+                各 12800）。视觉塔 <b>27 层</b>、宽 <b>1152</b>、<code>patch_embed</code> 是
+                Conv3d(2×16×16)（tubelet = 2 帧 × 16×16 像素）、<code>pos_embed</code>
+                2304 = 48×48；<code>merger</code> 把 2×2 相邻 token 拼成 4608 再投到 5120，并且还有
+                <b>3 个 deepstack merger</b>（<code>visual.deepstack_merger_list.0–2</code>）从 ViT
+                的不同深度各取一路特征。最后 <code>condition_proj</code> 是
+                <b>5120 → 5376</b>，正好对上主干的 hidden。因为总层数就是 50 层，官方说的“第
+                50 层”<b>就是最后一层的输出</b>；这份 repack 里没有
+                <code>model.norm</code> 与 <code>lm_head</code>，说明它只当编码器用。
+              </p>
+            </div>
+            <div class="gn-frame">
+              <div class="gn-frame-head">
+                <div>
+                  <strong>完整结构 · 多模态条件编码器（ViT + merger + LLM）</strong>
+                  <small
+                    >虚线框内是一个完整网络：文本 embedding 与视觉 token
+                    在序列维拼接后进入同一 LLM 堆叠，再从指定层取出条件。</small
+                  >
+                </div>
+                <span class="gn-badge">虚线框内＝一个完整结构</span>
+              </div>
+              <pre class="mermaid-lite" data-ml-label="多模态条件编码器完整结构">
+flowchart TD
+  t0["文本 prompt<br/>input_ids [B,N_txt]"]:::in --> te["token embedding<br/>[B,N_txt,D_llm]"]:::core
+  i0["图像 / 视频帧<br/>[B,3,H,W] 或 [B,3,T,H,W]"]:::in --> pe["PatchEmbed：Conv2d/Conv3d(k=14,s=14)<br/>[B,N_img,D_vit] + 位置编码"]:::core
+  pe --> vit["ViT blocks ×L_v<br/>窗口注意力与全局注意力交替<br/>[B,N_img,D_vit]"]:::attn
+  vit --> mer["Merger：2×2 token 合并 + MLP<br/>[B,N_img/4,D_llm]"]:::cond
+  te --> seq["concat(seq)：文本 embedding 与视觉 token<br/>[B,N_txt+N_img/4,D_llm]"]:::latent
+  mer --> seq
+  seq --> llm["decoder-only LLM 堆叠 ×L<br/>RMSNorm + GQA attention(RoPE) + SwiGLU<br/>[B,N,D_llm]"]:::attn
+  llm --> tap["取指定层的 hidden states<br/>（H3-Encoder：第 50 层）<br/>[B,N,D_enc]"]:::out
+  tap --> proj["条件投影 / 对齐<br/>[B,N,D_model]"]:::out
+  proj --> packed["作为 packed 序列的条件段<br/>每步被主干重新读取"]:::latent
+              </pre>
+              <p class="gn-note">
+                <b>读这张图要抓住三件事：</b>
+                ① 视觉 token 先经过 ViT 塔再经过 merger 降采样，才和文本
+                embedding 拼成一条序列；② 「取第几层」是 checkpoint 事实——H3 用的 Qwen3-VL-32B
+                一共 50 层，所以「第 50 层」就是最后一层的输出，不能想当然写成“中间层”；③
+                从 <code>D_enc</code> 到主干宽度 <code>D_model</code>
+                的投影在 H3 里已经核实是 <code>condition_proj</code> 的
+                <b>5120 → 5376</b>，其他模型仍要按 checkpoint 核对。
+              </p>
+            </div>
+
+            <h3>19. 一张总表：模块 × 模型</h3>
+            <p>
+              「√」表示该模型的主干确实用到这个零件；具体层数与参数永远以该
+              checkpoint 的 config 为准，这里的对应关系用于判断「该去哪份代码里找」。
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>模块</th>
+                    <th>SD 1.5 / SDXL</th>
+                    <th>SD3 / 3.5</th>
+                    <th>FLUX</th>
+                    <th>Qwen-Image</th>
+                    <th>MiniMax H3</th>
+                    <th>视频模型（Wan / CogVideoX / Hunyuan）</th>
+                    <th>LLM（LLaMA / Qwen）</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>ViT block</td>
+                    <td>√（CLIP 图像塔）</td>
+                    <td>√（CLIP 图像塔）</td>
+                    <td>—</td>
+                    <td>√（Qwen2.5-VL 视觉塔）</td>
+                    <td>√（Qwen3-VL-32B）</td>
+                    <td>√（部分 VAE 的 ViT 解码器）</td>
+                    <td>—</td>
+                  </tr>
+                  <tr>
+                    <td>AdaLN / AdaGN</td>
+                    <td>AdaGN（ResNet block 内）</td>
+                    <td>AdaLN-Zero</td>
+                    <td>AdaLN（含 guidance 调制）</td>
+                    <td>AdaLN / RMSNorm 调制</td>
+                    <td>AdaLN（官方称约 13B，可缓存；本地剪枝 repack 实测 ≈43.65M）</td>
+                    <td>√（时空 DiT 普遍用 AdaLN）</td>
+                    <td>—</td>
+                  </tr>
+                  <tr>
+                    <td>MLP / SwiGLU</td>
+                    <td>MLP（GELU）</td>
+                    <td>MLP（GELU）</td>
+                    <td>GELU 门控 <code>ff.net</code></td>
+                    <td>SwiGLU 类</td>
+                    <td>SwiGLU</td>
+                    <td>MLP（GELU）</td>
+                    <td>SwiGLU</td>
+                  </tr>
+                  <tr>
+                    <td>LayerNorm</td>
+                    <td>√（U-Net、CLIP）</td>
+                    <td>√</td>
+                    <td>√</td>
+                    <td>√</td>
+                    <td>√</td>
+                    <td>√</td>
+                    <td>—</td>
+                  </tr>
+                  <tr>
+                    <td>RMSNorm</td>
+                    <td>—</td>
+                    <td>√（<code>qk_norm</code>）</td>
+                    <td>√（Q/K 归一化）</td>
+                    <td>√</td>
+                    <td>√（主干与编码器）</td>
+                    <td>部分模型用于 Q/K</td>
+                    <td>√（主干）</td>
+                  </tr>
+                  <tr>
+                    <td>GroupNorm</td>
+                    <td>√（ResNet block、VAE）</td>
+                    <td>√（VAE）</td>
+                    <td>√（VAE）</td>
+                    <td>√（VAE）</td>
+                    <td>√（VAE / ResBlock3D）</td>
+                    <td>√（视频 VAE）</td>
+                    <td>—</td>
+                  </tr>
+                  <tr>
+                    <td>ResNet block</td>
+                    <td>√</td>
+                    <td>—（换成 Transformer）</td>
+                    <td>—</td>
+                    <td>—</td>
+                    <td>—（主干）</td>
+                    <td>—（主干）</td>
+                    <td>—</td>
+                  </tr>
+                  <tr>
+                    <td>Transformer2DModel</td>
+                    <td>√</td>
+                    <td>—</td>
+                    <td>—</td>
+                    <td>—</td>
+                    <td>—</td>
+                    <td>—</td>
+                    <td>—</td>
+                  </tr>
+                  <tr>
+                    <td>patchify / tubelet</td>
+                    <td>—</td>
+                    <td>√（2×2）</td>
+                    <td>√（2×2 pack）</td>
+                    <td>√（2×2 → 64 维）</td>
+                    <td>√（1×2×2）</td>
+                    <td>√（3D patch）</td>
+                    <td>—</td>
+                  </tr>
+                  <tr>
+                    <td>RoPE</td>
+                    <td>—</td>
+                    <td>—（用绝对位置）</td>
+                    <td>√（<code>(0,h,w)</code>）</td>
+                    <td>√（<code>[16,56,56]</code>）</td>
+                    <td>√（<code>MM-RoPE (t,h,w)</code>）</td>
+                    <td>部分模型用 3D RoPE</td>
+                    <td>√（1D）</td>
+                  </tr>
+                  <tr>
+                    <td>跨模态注意力（cross / joint）</td>
+                    <td>√（U-Net 各层 cross-attn）</td>
+                    <td>√（联合注意力）</td>
+                    <td>√（double-stream 各自 QKV）</td>
+                    <td>√（联合注意力）</td>
+                    <td>√（单流 joint attention）</td>
+                    <td>√</td>
+                    <td>—</td>
+                  </tr>
+                  <tr>
+                    <td>GQA</td>
+                    <td>—</td>
+                    <td>—</td>
+                    <td>—</td>
+                    <td>√（Qwen2.5-VL 侧）</td>
+                    <td>√</td>
+                    <td>—</td>
+                    <td>√</td>
+                  </tr>
+                  <tr>
+                    <td>MoE</td>
+                    <td>—</td>
+                    <td>—</td>
+                    <td>—</td>
+                    <td>—</td>
+                    <td>主干是 dense，非 MoE</td>
+                    <td>Wan2.2 用高/低噪声双专家</td>
+                    <td>√（Qwen3-MoE 等）</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              <strong>读完这一章可以自查三件事：</strong>① 看到一个新模型名，先问「它的主干是
+              U-Net 还是 Transformer」，这决定了你去找 ResNet block 还是
+              patchify + AdaLN；② 看到「条件」先分清是标量条件（走调制）还是序列条件（走
+              K/V）；③ 看到「×N」先确认 N
+              从哪个配置字段读，而不是按论文示意图数格子。之后进入各模型详情页时，这套零件表可以直接对照使用。
+            </p>
           </section>
           <section
             class="chapter"
             id="video-anatomy"
             data-group="图像与视频"
-            data-title="03 · 视频通用时空结构"
+            data-title="04 · 视频通用时空结构"
           >
             <div class="eyebrow">视频通用结构 / VAE、3D token 与时空注意力</div>
             <h2>视频生成器：VAE、3D token 与时空注意力</h2>
@@ -2770,7 +5376,7 @@ for n, p in model.named_parameters():
             class="chapter"
             id="lora-injection"
             data-group="图像与视频"
-            data-title="06 · LoRA 的真实挂载点"
+            data-title="07 · LoRA 的真实挂载点"
           >
             <div class="eyebrow">LoRA / 真实挂载点</div>
             <h2>LoRA 到底改哪些层？</h2>
@@ -2795,8 +5401,8 @@ for n, p in model.named_parameters():
                 </div>
               </div>
               <div class="formula-row">
-                <span><code>W' = W + ΔW</code></span
-                ><span><code>ΔW = (α/r)BA</code></span
+                <span><code>$W' = W + \Delta W$</code></span
+                ><span><code>$\Delta W = \frac{\alpha}{r}BA$</code></span
                 ><span><code>params = r(in + out)</code></span
                 ><span><code>base W.requires_grad=False</code></span>
               </div>
@@ -2978,7 +5584,7 @@ for name, module in model.named_modules():
             class="chapter"
             id="image-principles"
             data-group="图像与视频"
-            data-title="02 · 图像生成的数据路径"
+            data-title="03 · 图像生成的数据路径"
           >
             <div class="eyebrow">通用图像结构 / VAE、latent 与 DiT</div>
             <h2>图像生成的完整数据路径</h2>
@@ -3046,12 +5652,11 @@ for name, module in model.named_modules():
             <div class="panel accent">
               <h4>手算一次空间 token</h4>
               <p>
-                假设某模型 VAE 空间压缩 8 倍、DiT 用 2×2 潜空间
-                patch（仅示例，不代表所有模型）：1024×1024 → 128×128 潜图 →
-                64×64 = 4096 个图像 token；2048×2048 → 256×256 → 128×128 = 16384
-                token。宽高各翻倍使 token 约 4 倍；朴素全局注意力矩阵元素约 16
-                倍，实际耗时还取决于高效内核、局部注意力和模型实现。视频若再增加时间
-                patch 数，token 继续相乘。
+                token 数的算法（<code>N=(H'/p)(W'/p)</code>）与 128×128 latent 的算例见
+                <a href="#vision-anatomy">01 · 基础知识 §2</a>，这里只强调分辨率与注意力的关系：宽高各翻倍使
+                token 约 4 倍、朴素全局注意力矩阵元素约 16
+                倍，实际耗时还取决于高效内核、局部注意力和模型实现；视频若再增加时间
+                patch 数，token 继续相乘。这就是「1024 训的模型跑 2048 会崩」的直接原因。
               </p>
             </div>
             <div class="table-wrap">
@@ -3314,7 +5919,7 @@ for name, module in model.named_modules():
             class="chapter"
             id="video-principles"
             data-group="图像与视频"
-            data-title="04 · 视频生成的时空机制"
+            data-title="05 · 视频生成的时空机制"
           >
             <div class="eyebrow">通用视频结构 / 时空 token 与条件</div>
             <h2>视频生成：多了时间轴，难了什么</h2>
@@ -3611,7 +6216,7 @@ for name, module in model.named_modules():
             class="chapter"
             id="finetune"
             data-group="图像与视频"
-            data-title="05 · 本地微调路线"
+            data-title="06 · 本地微调路线"
           >
             <div class="eyebrow">通用微调 / 目标、数据与训练</div>
             <h2>本地微调：先定义要改变什么</h2>
@@ -3631,13 +6236,13 @@ for name, module in model.named_modules():
                 <tbody>
                   <tr>
                     <td>Prompt / RAG</td>
-                    <td>不更新权重；运行时注入检索文档</td>
-                    <td>事实经常变化、需要溯源；检索质量重要</td>
+                    <td>不更新权重；<b>RAG</b>（Retrieval-Augmented Generation，检索增强生成）先把文档库切成片段并建向量索引，推理时按 query 检索出 top-k 片段拼进上下文</td>
+                    <td>事实经常变化、需要溯源；检索质量与切块方式重要；上下文长度与成本随检索量增长</td>
                   </tr>
                   <tr>
                     <td>LoRA / DoRA</td>
-                    <td>线性层低秩增量；基座冻结</td>
-                    <td>低成本适配；容量受 rank 与目标模块限制</td>
+                    <td>LoRA 是线性层低秩增量（冻结基座）；<b>DoRA</b>（Weight-Decomposed Low-Rank Adaptation）把权重拆成<b>幅度</b>与<b>方向</b>两部分——幅度单独训练、方向用低秩增量更新</td>
+                    <td>低成本适配；容量受 rank 与目标模块限制；DoRA 训练与显存开销略高，低 rank 下通常比 LoRA 稳</td>
                   </tr>
                   <tr>
                     <td>QLoRA</td>
@@ -3664,11 +6269,10 @@ for name, module in model.named_modules():
             </div>
             <h3>LoRA 到 QLoRA 的机制</h3>
             <p>
-              原矩阵 <code>W ∈ R^(d×k)</code> 冻结，训练
-              <code>ΔW = (α/r)BA</code>，其中 <code>A ∈ R^(r×k)</code>、<code
-                >B ∈ R^(d×r)</code
-              >。当 <code>r ≪ min(d,k)</code> 时，可训练量从
-              <code>dk</code> 降至 <code>r(d+k)</code>。QLoRA 把冻结基座以 NF4
+              LoRA 的公式、rank 与 α 的含义、以及该挂到哪些层，已在
+              <a href="#lora-injection">07 · LoRA 的真实挂载点</a>
+              里完整讲过，这里只补两点：可训练量从 <code>$dk$</code> 降到
+              <code>$r(d+k)$</code> 是它的成本来源；<b>QLoRA</b> 则是把冻结基座以 NF4
               存储，计算时按块反量化，在高精度路径中叠加 LoRA
               梯度；双重量化压缩量化常数，paged optimizer
               可缓和峰值。不要把“4-bit 训练”误解为 4-bit
@@ -3794,7 +6398,7 @@ python examples/finetune_qlora.py --data examples/tickets.jsonl --output runs/ti
             class="chapter"
             id="distill"
             data-group="图像与视频"
-            data-title="07 · 本地蒸馏"
+            data-title="08 · 本地蒸馏"
           >
             <div class="chapter-rule">
               <strong>本节先讲通用蒸馏</strong
@@ -3825,7 +6429,7 @@ python examples/finetune_qlora.py --data examples/tickets.jsonl --output runs/ti
                   </tr>
                   <tr>
                     <td>logit / KL 蒸馏</td>
-                    <td>温度 T 的软分布；常用 T²·KL(p_teacher||p_student)</td>
+                    <td>温度 T 的软分布；常用 $T^2\cdot\mathrm{KL}(p_{\text{teacher}}\,\|\,p_{\text{student}})$</td>
                     <td>需访问教师 logits；tokenizer/词表不同需对齐或改方法</td>
                   </tr>
                   <tr>
@@ -4009,7 +6613,7 @@ python examples/finetune_qlora.py \
             class="chapter"
             id="labs"
             data-group="图像与视频"
-            data-title="08 · 四个验证实验"
+            data-title="实验 · 四个验证实验"
           >
             <div class="eyebrow">验证实验 / 质量、成本与风险</div>
             <h2>四个必须亲手做的实验</h2>
@@ -4029,6 +6633,8 @@ python examples/finetune_qlora.py \
               副本、TP=2（若支持）。请求矩阵至少覆盖短/长输入与低/高并发，记录
               P50/P95
               延迟及总吞吐。<strong>验收：</strong>解释通信开销何时超过分摊收益，给出本机推荐部署方式。
+              并行实验的具体协议（先单卡基线，再依次加 DDP / TP / FSDP，每次只改一个维度）见
+              <a href="#parallel-lab">实验 · 多卡通信与拓扑验收</a>，这里只保留与本书其它实验一致的验收标准。
             </p>
             <h3>实验 C · 图像/视频工作流</h3>
             <p>
@@ -4135,7 +6741,7 @@ python examples/finetune_qlora.py \
             data-group="附录"
             data-title="资料 · 一手资料索引"
           >
-            <div class="eyebrow">14 / 附录</div>
+            <div class="eyebrow">附录 / 资料与核验方法</div>
             <h2>一手资料索引与更新法</h2>
             <p class="lead">
               论文回答“方法是什么”，官方仓库/模型卡回答“这个 checkpoint
@@ -4310,6 +6916,8 @@ python examples/finetune_qlora.py \
         </footer>
       </div>
     </div>
+    <script src="mathlite.js"></script>
+    <script src="mermaid-lite.js"></script>
     <script src="app.js"></script>
   </body>
 </html>
